@@ -48,8 +48,10 @@ def _read_secret_file(path: Path, what: str) -> str:
         value = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise ConfigError(f"cannot read {what} file {path}: {exc.strerror}") from None
-    if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-        log.warning("%s file %s is readable by other users; run: chmod 600 %s", what, path, path)
+    # Group-readable is the intended setup (root:fantasybot 640); world-readable is not.
+    if info.st_mode & stat.S_IRWXO:
+        log.warning("%s file %s is readable by every user on this machine; run: chmod o-rwx %s",
+                    what, path, path)
     if not value:
         raise ConfigError(f"{what} file {path} is empty")
     return value

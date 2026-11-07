@@ -84,3 +84,29 @@ def test_import_from_stdin_stores_the_rotated_token(tmp_path, monkeypatch, capsy
     assert "Verified with LaLiga and stored" in out
     assert "rt-rotated" not in out and "rt-pasted" not in out
     assert TokenStore(state / "tokens.enc", key).load().refresh_token == "rt-rotated"
+
+
+def test_world_readable_secret_files_warn(tmp_path, caplog):
+    from fantasybot.config import Settings
+
+    key_file = tmp_path / "token_key"
+    key_file.write_bytes(Fernet.generate_key())
+    key_file.chmod(0o640)  # group-readable: the intended service setup, no warning
+    Settings(state_dir=tmp_path, token_key_file=key_file).resolved_token_key()
+    assert "readable by every user" not in caplog.text
+    key_file.chmod(0o644)
+    Settings(state_dir=tmp_path, token_key_file=key_file).resolved_token_key()
+    assert "readable by every user" in caplog.text
+
+
+def test_empty_telegram_token_file_disables_alerts_instead_of_failing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FANTASYBOT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("FANTASYBOT_TOKEN_KEY", Fernet.generate_key().decode())
+    empty = tmp_path / "telegram_bot_token"
+    empty.write_text("")
+    monkeypatch.setenv("FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE", str(empty))
+    monkeypatch.setenv("FANTASYBOT_REQUEST_DELAY", "0")
+    # No token stored yet: the health check runs and reports that, rather than crashing.
+    assert main(["healthcheck"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  auth_refresh" in out and "auth import" in out

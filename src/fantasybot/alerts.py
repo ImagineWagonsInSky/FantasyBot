@@ -12,7 +12,7 @@ from typing import Protocol
 
 import httpx
 
-from .config import Settings
+from .config import ConfigError, Settings
 from .redact import redact
 
 log = logging.getLogger(__name__)
@@ -68,9 +68,35 @@ class TelegramAlerter:
 
 
 def build_alerter(settings: Settings, http: httpx.AsyncClient) -> Alerter:
-    token = settings.resolved_telegram_token()
+    # A missing or empty Telegram token turns alerts off; it must not stop the bot.
+    try:
+        token = settings.resolved_telegram_token()
+    except ConfigError as exc:
+        log.warning("Telegram alerts are off: %s", exc)
+        token = None
     if token and settings.telegram_chat_id:
         return TelegramAlerter(http, token, settings.telegram_chat_id, settings.telegram_api_base)
     if token or settings.telegram_chat_id:
         log.warning("Telegram needs both a bot token and FANTASYBOT_TELEGRAM_CHAT_ID; alerts go to the log")
     return LogAlerter()
+
+
+async def telegram_recent_chats(http: httpx.AsyncClient, bot_token: str,
+                                api_base: str = "https://api.telegram.org") -> list[tuple[str, str]]:
+    """Chats that recently messaged the bot, as (chat_id, label). Saves you
+    pasting the bot token into a browser to find your chat ID."""
+    try:
+        response = await http.get(f"{api_base.rstrip('/')}/bot{bot_token}/getUpdates", timeout=15.0)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(redact(f"Telegram unreachable: {type(exc).__name__}", bot_token)) from None
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram answered HTTP {response.status_code} (is the bot token right?)")
+    chats: dict[str, str] = {}
+    for update in response.json().get("result", []):
+        message = update.get("message") or update.get("channel_post") or {}
+        chat = message.get("chat") or {}
+        if "id" in chat:
+            label = (chat.get("title") or chat.get("username") or chat.get("first_name")
+                     or chat.get("type", ""))
+            chats[str(chat["id"])] = f"{label} ({chat.get('type', '?')})"
+    return list(chats.items())

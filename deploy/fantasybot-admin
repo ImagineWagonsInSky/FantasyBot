@@ -1,0 +1,14 @@
+#!/bin/sh
+# Run a fantasybot command as the service user, with the service's settings,
+# e.g.  fantasybot-admin auth import
+#       fantasybot-admin auth status
+#       fantasybot-admin healthcheck --no-alert
+set -eu
+exec sudo -u fantasybot sh -c '
+  cd /
+  set -a
+  . /etc/fantasybot/fantasybot.env
+  set +a
+  umask 077
+  exec /opt/fantasybot/.venv/bin/fantasybot "$@"
+' fantasybot "$@"

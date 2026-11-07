@@ -49,9 +49,11 @@ def parse_token_paste(text: str) -> dict[str, str | int | None]:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            raise TokenImportError("that is not valid JSON; copy the whole response from { to }") from None
+            raise TokenImportError(
+                "that is not valid JSON; copy the whole response from { to }") from None
         if not isinstance(data, dict) or not isinstance(data.get("refresh_token"), str):
-            raise TokenImportError('the JSON has no "refresh_token"; copy the token response, not the request')
+            raise TokenImportError(
+                'the JSON has no "refresh_token"; copy the token response, not the request')
         return {
             "refresh_token": data["refresh_token"],
             "id_token": data.get("id_token") if isinstance(data.get("id_token"), str) else None,

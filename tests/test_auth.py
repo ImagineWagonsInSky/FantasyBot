@@ -301,7 +301,8 @@ def test_paste_collector_stops_when_the_json_closes():
 
 def test_redact_scrubs_tokens():
     jwt = make_jwt(NOW)
-    text = f"id={jwt} auth=Bearer abcdefghijklmnopqrstuvwxyz bot=123456789:AAH-abcdefghijklmnopqrstuvwxyz012345"
+    bot = "123456789:AAH-abcdefghijklmnopqrstuvwxyz012345"
+    text = f"id={jwt} auth=Bearer abcdefghijklmnopqrstuvwxyz bot={bot}"
     out = redact(text, "my-own-secret-value")
     assert jwt not in out
     assert "abcdefghijklmnopqrstuvwxyz" not in out

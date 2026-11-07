@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 from . import ATTRIBUTION, __version__
+from .alerts import LogAlerter, telegram_recent_chats
+from .api import FantasyClient
 from .auth import (
     AuthUnavailable,
     FreezeGuard,
@@ -20,6 +22,8 @@ from .auth import (
     parse_token_paste,
 )
 from .config import NATIVE_CLIENT_ID, WEB_CLIENT_ID, ConfigError, Settings
+from .fixtures import FixtureRecorder
+from .healthcheck import HealthCheck, run_and_alert
 from .redact import redact
 from .runtime import Runtime, open_runtime
 
@@ -191,7 +195,8 @@ def cmd_gen_key(args: argparse.Namespace) -> int:
     with os.fdopen(fd, "wb") as handle:
         handle.write(key + b"\n")
     print(f"Wrote a new key to {path} (mode 600).")
-    print(f"Point FANTASYBOT_TOKEN_KEY_FILE at it, and back it up somewhere other than this machine.")
+    print("Point FANTASYBOT_TOKEN_KEY_FILE at it. If it is ever lost, generate a new one and run "
+          "`fantasybot auth import` again.")
     return 0
 
 
@@ -229,6 +234,49 @@ async def cmd_refresh(rt: Runtime, args: argparse.Namespace) -> int:
     return print_status(rt.settings, rt.store, rt.freeze)
 
 
+async def cmd_healthcheck(rt: Runtime, args: argparse.Namespace) -> int:
+    recorder = FixtureRecorder() if args.save_fixtures else None
+    client = (FantasyClient(rt.settings, rt.tokens, rt.freeze, rt.http, on_response=recorder)
+              if recorder else rt.client)
+    report = await run_and_alert(HealthCheck(rt.settings, rt.tokens, client), rt.alerter,
+                                 alert=not args.no_alert)
+    print(report.console_text())
+    if recorder is not None:
+        directory = Path(args.save_fixtures).expanduser()
+        written = recorder.write(directory)
+        print(f"\nSaved {len(written)} anonymised responses to {directory}/ (mode 600).")
+        print("Names, emails, URLs and IDs are replaced; numbers and dates are kept.")
+        print("Skim them before sharing.")
+    return 0 if report.healthy else 1
+
+
+async def cmd_telegram(rt: Runtime, args: argparse.Namespace) -> int:
+    if args.telegram_command == "chats":
+        token = rt.settings.resolved_telegram_token()
+        if not token:
+            print("Set FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE first.", file=sys.stderr)
+            return 2
+        try:
+            chats = await telegram_recent_chats(rt.http, token, rt.settings.telegram_api_base)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if not chats:
+            print("No messages yet. Send your bot any message in Telegram, then run this again.")
+            return 1
+        for chat_id, label in chats:
+            print(f"{chat_id}\t{label}")
+        print("\nPut the one you want in FANTASYBOT_TELEGRAM_CHAT_ID.")
+        return 0
+    if isinstance(rt.alerter, LogAlerter):
+        print("Telegram is not configured: set FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE and "
+              "FANTASYBOT_TELEGRAM_CHAT_ID.", file=sys.stderr)
+        return 2
+    sent = await rt.alerter.send("✅ FantasyBot test message: alerts reach this chat.")
+    print("Sent." if sent else "Sending failed; see the log above.")
+    return 0 if sent else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fantasybot",
@@ -250,6 +298,16 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub.add_parser("status", help="show session expiry and freeze state (never prints tokens)")
     auth_sub.add_parser("refresh", help="redeem the refresh token now")
 
+    health = sub.add_parser("healthcheck", help="check every read endpoint; alert on Telegram if any breaks")
+    health.add_argument("--save-fixtures", metavar="DIR",
+                        help="also save anonymised responses to DIR (e.g. fixtures-capture)")
+    health.add_argument("--no-alert", action="store_true", help="print the report, send nothing")
+
+    tg = sub.add_parser("telegram", help="set up and test Telegram alerts")
+    tg_sub = tg.add_subparsers(dest="telegram_command", required=True)
+    tg_sub.add_parser("chats", help="list chats that messaged the bot, to find your chat ID")
+    tg_sub.add_parser("test", help="send a test alert")
+
     sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
     sub.add_parser("about", help="version, license and credits")
     return parser
@@ -261,6 +319,10 @@ async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
             return await cmd_import(rt, args)
         if args.command == "auth" and args.auth_command == "refresh":
             return await cmd_refresh(rt, args)
+        if args.command == "healthcheck":
+            return await cmd_healthcheck(rt, args)
+        if args.command == "telegram":
+            return await cmd_telegram(rt, args)
     raise AssertionError(f"unhandled command {args.command}")
 
 
