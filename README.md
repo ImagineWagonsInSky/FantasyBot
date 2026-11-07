@@ -10,6 +10,13 @@ still looks the way the code expects.
   sign-in policy, `id_token` as the bearer, the refresh token rotated and
   stored encrypted, writes frozen and an alert sent when the session can't
   be renewed.
+- **API client** (`fantasybot.api.FantasyClient`): every endpoint from
+  LaLigaApp's `api.js` as a typed async method returning pydantic models.
+  The competition ID comes from config. Writes are dry runs unless
+  `FANTASYBOT_DRY_RUN=false`, are refused while writes are frozen, and are
+  never retried automatically. Not ported: `scrapeTeamLineup` (LaLigaApp's
+  own futbolfantasy.com scraper) and `shieldPlayer` (claims a rewarded ad was
+  watched).
 
 ## Credits and license
 

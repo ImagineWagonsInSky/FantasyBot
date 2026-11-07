@@ -12,6 +12,8 @@ from cryptography.fernet import Fernet
 from fantasybot.auth import FreezeGuard, TokenBundle, TokenManager, TokenStore
 from fantasybot.config import Settings
 
+from .fakeapi import FakeLaLiga
+
 NOW = 1_800_000_000
 
 
@@ -45,8 +47,9 @@ Handler = Callable[[httpx.Request], httpx.Response]
 class Router:
     """Tiny request router for httpx.MockTransport that records every call."""
 
-    def __init__(self) -> None:
+    def __init__(self, fallback: Handler | None = None) -> None:
         self.calls: list[httpx.Request] = []
+        self.fallback = fallback
         self._routes: list[tuple[str, str, list[Handler | httpx.Response]]] = []
 
     def add(self, method: str, url_prefix: str, *responses: Handler | httpx.Response) -> None:
@@ -64,6 +67,8 @@ class Router:
                 if isinstance(item, Exception):
                     raise item
                 return item(request) if callable(item) else item
+        if self.fallback is not None:
+            return self.fallback(request)
         return httpx.Response(599, json={"unrouted": url})
 
 
@@ -90,8 +95,14 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-def router() -> Router:
-    return Router()
+def fake() -> FakeLaLiga:
+    return FakeLaLiga()
+
+
+@pytest.fixture
+def router(fake: FakeLaLiga) -> Router:
+    """B2C and Telegram routes are added per test; everything else is the fake API."""
+    return Router(fallback=fake)
 
 
 @pytest.fixture
@@ -141,3 +152,14 @@ def seed(store: TokenStore, *, id_exp: int, refresh_token: str = "rt-1",
     )
     store.save(bundle)
     return bundle
+
+
+@pytest.fixture
+def client(settings, tokens, freeze, http, store, sleeps):
+    from fantasybot.api import FantasyClient
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    seed(store, id_exp=NOW + 3600)
+    return FantasyClient(settings, tokens, freeze, http, sleep=fake_sleep, clock=lambda: 0.0)

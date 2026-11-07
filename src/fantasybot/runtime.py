@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import httpx
 
 from .alerts import Alerter, build_alerter
+from .api import FantasyClient
 from .auth import FreezeGuard, TokenManager, TokenStore
 from .config import Settings
 
@@ -21,6 +22,7 @@ class Runtime:
     freeze: FreezeGuard
     alerter: Alerter
     tokens: TokenManager
+    client: FantasyClient
 
 
 @contextlib.asynccontextmanager
@@ -33,4 +35,5 @@ async def open_runtime(
         freeze = FreezeGuard(settings.freeze_path)
         alerter = build_alerter(settings, http)
         tokens = TokenManager(settings, store, freeze, alerter, http)
-        yield Runtime(settings, http, store, freeze, alerter, tokens)
+        client = FantasyClient(settings, tokens, freeze, http)
+        yield Runtime(settings, http, store, freeze, alerter, tokens, client)
