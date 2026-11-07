@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the FantasyBot kickoff guard every hour
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

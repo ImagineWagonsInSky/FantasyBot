@@ -115,7 +115,7 @@ fantasybot-admin healthcheck --no-alert
 ```
 
 ```bash
-sudo cp /opt/fantasybot/deploy/fantasybot-healthcheck.service /opt/fantasybot/deploy/fantasybot-healthcheck.timer /etc/systemd/system/
+sudo cp /opt/fantasybot/deploy/fantasybot-healthcheck.service /opt/fantasybot/deploy/fantasybot-healthcheck.timer /opt/fantasybot/deploy/fantasybot-guard.service /opt/fantasybot/deploy/fantasybot-guard.timer /etc/systemd/system/
 ```
 
 ```bash
@@ -123,10 +123,10 @@ sudo systemctl daemon-reload
 ```
 
 ```bash
-sudo systemctl enable --now fantasybot-healthcheck.timer
+sudo systemctl enable --now fantasybot-healthcheck.timer fantasybot-guard.timer
 ```
 
-The check then runs every morning around 09:20 local time. If the machine
+The health check and briefing then run every morning around 09:20 local time, and the kickoff guard every hour. If the machine
 was off at that time, it runs as soon as the machine is back. To see when
 it runs next and what it said:
 

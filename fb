@@ -1,10 +1,13 @@
 #!/bin/sh
 # FantasyBot in Docker. This is the one command you use; see ./fb help.
 set -eu
+umask 077  # logs, settings and schedule files stay private
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 LABEL=com.fantasybot.healthcheck
 UNIT=fantasybot-healthcheck
+GUARD_LABEL=com.fantasybot.guard
+GUARD_UNIT=fantasybot-guard
 # launchd and systemd start jobs with a minimal PATH; add where Docker lives.
 PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
 export PATH
@@ -49,12 +52,15 @@ First-time setup
   telegram chats           list chats that messaged your bot (to find your chat ID)
   telegram test            send a test alert
   auth import              paste your LaLiga token (not shown on screen)
-  schedule install [HH:MM] run the health check every day (default 09:20)
+  schedule install [HH:MM] daily briefing (default 09:20) + hourly kickoff guard
 
 Everyday
+  briefing                 today's lineup, market, clause steals and rival moves
+                           (add --no-send to print it without sending to Telegram)
+  guard                    alert if the next jornada would cost you points (--no-send)
   healthcheck              check every read endpoint (add --no-alert to skip Telegram)
   auth status              session expiry and write-freeze state
-  schedule status          is the daily run set up, and what did it last say
+  schedule status          are the scheduled runs set up, and what did they last say
   fixtures                 save anonymised API responses to ./fixtures-capture
   rebuild                  rebuild the image after `git pull`
   schedule remove          stop the daily run
@@ -79,7 +85,7 @@ Next:
   ./fb telegram set-token     then message your bot, then ./fb telegram chats
   (put the chat ID in fantasybot.env), then ./fb telegram test
   ./fb auth import            paste the token JSON from miliga.laliga.com
-  ./fb healthcheck --no-alert
+  ./fb briefing --no-send
   ./fb schedule install
 EOF
 }
@@ -99,7 +105,7 @@ cmd_fixtures() {
 cmd_run_daily() {
   mkdir -p "$(dirname "$LOG")"
   {
-    echo "=== $(date '+%Y-%m-%d %H:%M:%S') daily health check"
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') daily health check and briefing"
     if ! docker info >/dev/null 2>&1 && [ "$OS" = mac ]; then
       echo "Docker isn't running; starting Docker Desktop"
       open -ga Docker 2>/dev/null || true
@@ -108,16 +114,90 @@ cmd_run_daily() {
     fi
     if docker info >/dev/null 2>&1; then
       run_in fantasybot healthcheck 2>&1 || echo "(health check exited $?)"
+      echo "--- briefing"
+      run_in fantasybot briefing 2>&1 || echo "(briefing exited $?)"
     else
-      echo "Docker isn't running: today's check was skipped"
-      notify "Today's health check didn't run: Docker isn't running."
+      echo "Docker isn't running: today's check and briefing were skipped"
+      notify "Today's briefing didn't run: Docker isn't running."
     fi
   } >>"$LOG" 2>&1
-  # Keep the log small.
-  tail -n 4000 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+  trim_log
 }
 
+# Hourly. Quiet unless the next jornada would cost points; only then is
+# anything logged (the alert itself goes to Telegram).
+cmd_run_guard() {
+  docker info >/dev/null 2>&1 || exit 0
+  out=$(run_in fantasybot guard 2>&1) || true
+  case "$out" in
+    *"Nothing to fix"*) ;;
+    *)
+      mkdir -p "$(dirname "$LOG")"
+      { echo "=== $(date '+%Y-%m-%d %H:%M:%S') kickoff guard"; printf '%s\n' "$out"; } >>"$LOG"
+      trim_log ;;
+  esac
+}
+
+trim_log() { tail -n 4000 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"; }
+
 xml_escape() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+launch_agents_dir() { printf '%s' "${HOME:?}/Library/LaunchAgents"; }
+systemd_user_dir() { printf '%s' "${XDG_CONFIG_HOME:-${HOME:?}/.config}/systemd/user"; }
+
+# mac_job LABEL COMMAND SCHEDULE_XML
+mac_job() {
+  dir=$(launch_agents_dir)
+  plist="$dir/$1.plist"
+  mkdir -p "$dir"
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$1</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>$(xml_escape "$ROOT/fb")</string>
+    <string>$2</string>
+  </array>
+$3
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>$(xml_escape "$LOG")</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+}
+
+# linux_job UNIT DESCRIPTION COMMAND TIMER_LINES
+linux_job() {
+  dir=$(systemd_user_dir)
+  mkdir -p "$dir"
+  esc_root=$(printf '%s' "$ROOT" | sed 's/%/%%/g')
+  cat >"$dir/$1.service" <<EOF
+[Unit]
+Description=$2
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh "$esc_root/fb" $3
+EOF
+  cat >"$dir/$1.timer" <<EOF
+[Unit]
+Description=Schedule for: $2
+
+[Timer]
+$4
+
+[Install]
+WantedBy=timers.target
+EOF
+}
 
 cmd_schedule() {
   action=${1:-status}
@@ -136,96 +216,69 @@ cmd_schedule() {
           echo "and iCloud folders, and those may sync to the cloud. Move this folder to"
           echo "e.g. ~/FantasyBot and run ./fb schedule install again." >&2 ;;
       esac
-      plist="$HOME/Library/LaunchAgents/$LABEL.plist"
-      mkdir -p "$HOME/Library/LaunchAgents"
-      cat >"$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/sh</string>
-    <string>$(xml_escape "$ROOT/fb")</string>
-    <string>run-daily</string>
-  </array>
-  <key>StartCalendarInterval</key>
+      mac_job "$LABEL" run-daily "  <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>$hour_n</integer>
     <key>Minute</key><integer>$minute_n</integer>
-  </dict>
-  <key>StandardOutPath</key><string>/dev/null</string>
-  <key>StandardErrorPath</key><string>$(xml_escape "$LOG")</string>
-</dict>
-</plist>
-EOF
-      launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$plist"
-      echo "Scheduled daily at $at. If the Mac is asleep then, it runs when it wakes."
+  </dict>"
+      mac_job "$GUARD_LABEL" run-guard "  <key>StartInterval</key><integer>3600</integer>"
+      echo "Briefing scheduled daily at $at (if the Mac is asleep then, it runs when it wakes)."
+      echo "Kickoff guard checks every hour while the Mac is awake."
       echo "Turn on Docker Desktop > Settings > General > 'Start Docker Desktop when you sign in'."
       echo "Results are logged to $LOG"
       ;;
     mac:remove)
-      launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-      rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
-      echo "Daily run removed." ;;
+      dir=$(launch_agents_dir)
+      for label in "$LABEL" "$GUARD_LABEL"; do
+        launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+        rm -f "${dir:?}/${label:?}.plist"
+      done
+      echo "Daily briefing and kickoff guard removed." ;;
     mac:status)
-      if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-        echo "Daily run: installed"
-      else
-        echo "Daily run: not installed (./fb schedule install)"
-      fi
+      for pair in "$LABEL:Daily briefing" "$GUARD_LABEL:Kickoff guard"; do
+        if launchctl print "gui/$(id -u)/${pair%%:*}" >/dev/null 2>&1; then
+          echo "${pair#*:}: installed"
+        else
+          echo "${pair#*:}: not installed (./fb schedule install)"
+        fi
+      done
       show_last_run ;;
     linux:install)
       if ! systemctl --user show-environment >/dev/null 2>&1; then
-        echo "No systemd user session here. Add this line with 'crontab -e' instead:" >&2
         # cron treats % as a newline, so escape it.
-        echo "$minute $hour * * * /bin/sh '$(printf '%s' "$ROOT" | sed 's/%/\\%/g')/fb' run-daily" >&2
+        root_cron=$(printf '%s' "$ROOT" | sed 's/%/\\%/g')
+        echo "No systemd user session here. Add these lines with 'crontab -e' instead:" >&2
+        echo "$minute $hour * * * /bin/sh '$root_cron/fb' run-daily" >&2
+        echo "5 * * * * /bin/sh '$root_cron/fb' run-guard" >&2
         exit 1
       fi
-      dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-      mkdir -p "$dir"
-      esc_root=$(printf '%s' "$ROOT" | sed 's/%/%%/g')
-      cat >"$dir/$UNIT.service" <<EOF
-[Unit]
-Description=FantasyBot daily health check (Docker)
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh "$esc_root/fb" run-daily
-EOF
-      cat >"$dir/$UNIT.timer" <<EOF
-[Unit]
-Description=Run the FantasyBot health check daily
-
-[Timer]
-OnCalendar=*-*-* $hour:$minute:00
+      linux_job "$UNIT" "FantasyBot daily health check and briefing (Docker)" run-daily \
+"OnCalendar=*-*-* $hour:$minute:00
 RandomizedDelaySec=10min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
+Persistent=true"
+      linux_job "$GUARD_UNIT" "FantasyBot kickoff guard (Docker)" run-guard \
+"OnCalendar=hourly
+RandomizedDelaySec=5min"
       systemctl --user daemon-reload
-      systemctl --user enable --now "$UNIT.timer"
-      echo "Scheduled daily at $at; a run missed while the machine was off happens at next boot."
+      systemctl --user enable --now "$UNIT.timer" "$GUARD_UNIT.timer"
+      echo "Briefing scheduled daily at $at; a run missed while the machine was off happens at next boot."
+      echo "Kickoff guard checks every hour."
       echo "On a Raspberry Pi or other always-on box, also run once:  sudo loginctl enable-linger $(id -un)"
       echo "(so it runs without you being logged in). Results are logged to $LOG"
       ;;
     linux:remove)
-      systemctl --user disable --now "$UNIT.timer" 2>/dev/null || true
-      dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-      rm -f "$dir/$UNIT.service" "$dir/$UNIT.timer"
+      systemctl --user disable --now "$UNIT.timer" "$GUARD_UNIT.timer" 2>/dev/null || true
+      dir=$(systemd_user_dir)
+      for unit in "$UNIT" "$GUARD_UNIT"; do
+        rm -f "${dir:?}/${unit:?}.service" "${dir:?}/${unit:?}.timer"
+      done
       systemctl --user daemon-reload 2>/dev/null || true
-      echo "Daily run removed." ;;
+      echo "Daily briefing and kickoff guard removed." ;;
     linux:status)
       if systemctl --user is-enabled "$UNIT.timer" >/dev/null 2>&1; then
-        systemctl --user list-timers "$UNIT.timer" --no-pager 2>/dev/null | head -2
+        systemctl --user list-timers "$UNIT.timer" "$GUARD_UNIT.timer" --no-pager 2>/dev/null | head -3
       else
-        echo "Daily run: not installed (./fb schedule install)"
+        echo "Daily briefing: not installed (./fb schedule install)"
       fi
       show_last_run ;;
     *) usage; exit 2 ;;
@@ -247,6 +300,7 @@ case "${1:-help}" in
   rebuild) need_docker; compose build ;;
   fixtures) cmd_fixtures ;;
   run-daily) cmd_run_daily ;;
+  run-guard) cmd_run_guard ;;
   schedule) shift; cmd_schedule "$@" ;;
   logs) tail -n 80 "$LOG" ;;
   auth)

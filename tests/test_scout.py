@@ -1,0 +1,366 @@
+from __future__ import annotations
+
+import json
+import stat
+from datetime import date, timedelta
+
+import pytest
+
+from fantasybot.api.models import Lineup, Player, TeamData
+from fantasybot.scout.analysis import (
+    Rival,
+    assess_readiness,
+    best_lineup,
+    build_squad,
+    clause_radar,
+    money,
+    next_kickoff,
+    parse_formations,
+    read_lineup,
+    sell_to_cover,
+)
+from fantasybot.scout.briefing import gather, pack, run_briefing
+from fantasybot.scout.guard import run_guard
+from fantasybot.scout.history import PriceHistory
+from fantasybot.scout.model import COACH, project
+
+from . import scout_league
+from .conftest import NOW as TOKEN_NOW
+from .conftest import seed
+from .scout_league import CET, NOW
+
+
+async def no_sleep(_: float) -> None:
+    return None
+
+
+@pytest.fixture
+def league(fake, store):
+    seed(store, id_exp=TOKEN_NOW + 3600)
+    return scout_league.build(fake)
+
+
+@pytest.fixture
+def scout_client(settings, tokens, freeze, http, clock):
+    from fantasybot.api import FantasyClient
+
+    clock.now = NOW.timestamp() - 60  # the token stays valid for the whole test
+    return FantasyClient(settings, tokens, freeze, http, sleep=no_sleep, clock=lambda: 0.0)
+
+
+@pytest.fixture
+def seeded_store(store, clock):
+    seed(store, id_exp=int(NOW.timestamp()) + 7200)
+    return store
+
+
+# -- expected points -----------------------------------------------------------
+
+
+def make(**fields) -> Player:
+    return Player.model_validate({"id": "X", "positionId": 3, "averagePoints": 4, **fields})
+
+
+def week(n: int, points: int, minutes: int = 90) -> dict:
+    return {"weekNumber": n, "totalPoints": points, "stats": {"mins_played": [minutes, 2]}}
+
+
+def test_projection_blends_recent_form_with_the_season():
+    p = make(playerStats=[week(8, 0), week(9, 6), week(10, 8), week(11, 10), week(12, 0, 0)])
+    proj = project(p, current_week=12)  # week 12 isn't finished, so it's ignored
+    assert proj.form == 8.0
+    assert proj.expected == pytest.approx(0.6 * 8 + 0.4 * 4)
+
+
+@pytest.mark.parametrize(("status", "factor"), [("injured", 0), ("suspended", 0), ("doubt", 0.5)])
+def test_unavailable_players_are_discounted(status, factor):
+    assert project(make(playerStatus=status)).expected == pytest.approx(4 * factor)
+
+
+def test_not_playing_last_jornada_is_a_rotation_risk_but_not_for_coaches():
+    played = [week(9, 6), week(10, 6), week(11, 0, minutes=0)]
+    assert project(make(playerStats=played), 12).note == "didn't play last jornada"
+    assert project(make(playerStats=played, positionId=COACH), 12).note == ""
+
+
+def test_position_falls_back_to_the_spanish_name():
+    from fantasybot.scout.model import position_of
+
+    assert position_of(Player.model_validate({"id": 1, "position": "Entrenador"})) == COACH
+
+
+# -- lineups and readiness -----------------------------------------------------
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ([[4, 4, 2], "3-5-2", {"tacticalFormation": [4, 3, 3]}, "1-5-3-2", "433"],
+     [(3, 5, 2), (4, 3, 3), (4, 4, 2), (5, 3, 2)]),
+    ([], [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), (5, 4, 1)]),
+])
+def test_parse_formations(raw, expected):
+    assert parse_formations(raw) == expected
+
+
+def my_squad(fake):
+    team = TeamData.model_validate(fake.data["team_data_by_id"]["T1"])
+    details = {pid: Player.model_validate(p) for pid, p in scout_league.PLAYERS.items()}
+    return build_squad(team, details, current_week=12)
+
+
+def test_best_lineup_benches_the_injured_and_picks_the_best_formation(fake):
+    scout_league.build(fake)
+    squad = my_squad(fake)
+    plan = best_lineup(squad, parse_formations(fake.data["free_formations"]))
+    names = {p.name for p in plan.starters}
+    assert "Hurt" not in names and "Def D" in names and "Backup" not in names
+    assert plan.coach.name == "Coach"
+    assert len(plan.starters) == 11
+
+
+def test_readiness_finds_what_costs_points(fake):
+    scout_league.build(fake)
+    squad = my_squad(fake)
+    current = read_lineup(Lineup.model_validate(fake.data["current_lineup"]), squad)
+    assert (current.filled, current.slots, current.not_owned) == (11, 11, 0)
+    assert current.coach.name == "Coach"
+
+    kickoff = next_kickoff({12: [m for m in _matches(fake, "12")]}, 12, NOW)
+    ready = assess_readiness(-1_500_000, current, squad, kickoff)
+    assert not ready.ready
+    assert any("0 points" in p for p in ready.problems)
+    assert any("Hurt (DEF) is injured" in p for p in ready.problems)
+    assert any("Rested (FWD) didn't play" in w for w in ready.warnings)
+
+
+def test_a_sold_player_left_in_the_lineup_is_flagged(fake):
+    scout_league.build(fake)
+    fake.data["current_lineup"]["formation"]["striker"] = [{"playerTeamId": "SOLD"}]
+    squad = my_squad(fake)
+    current = read_lineup(Lineup.model_validate(fake.data["current_lineup"]), squad)
+    ready = assess_readiness(100, current, squad, None)
+    assert "Your lineup has 10 of 11 players." in ready.problems
+    assert "1 lineup slot(s) hold players you no longer own." in ready.problems
+
+
+def _matches(fake, week_number):
+    from fantasybot.api.models import Match
+
+    return [Match.model_validate(m) for m in fake.data["matchday_by_week"][week_number]]
+
+
+def test_next_kickoff_skips_finished_jornadas(fake):
+    scout_league.build(fake)
+    matches = {12: _matches(fake, "12"), 13: _matches(fake, "13")}
+    assert next_kickoff(matches, 12, NOW).jornada == 12
+    later = NOW + timedelta(days=2)
+    assert next_kickoff(matches, 12, later).jornada == 13
+    mid = NOW + timedelta(hours=13)  # after Friday's match, before Saturday's
+    assert next_kickoff(matches, 12, mid).in_progress
+
+
+def test_sell_to_cover_uses_bench_players_only(fake):
+    scout_league.build(fake)
+    squad = my_squad(fake)
+    plan = best_lineup(squad, parse_formations([]))
+    picked = sell_to_cover(1_500_000, squad, plan.starters + [plan.coach])
+    assert picked and sum(p.value for p in picked) >= 1_500_000
+    assert not {p.name for p in picked} & {p.name for p in plan.starters}
+
+
+# -- clauses -------------------------------------------------------------------
+
+
+def test_clause_radar(fake):
+    from fantasybot.api.models import StandingEntry
+
+    scout_league.build(fake)
+    rows = {r["team"]["id"]: StandingEntry.model_validate(r) for r in fake.data["league_ranking"]}
+    rivals = [Rival(rows[t], rank, build_squad(TeamData.model_validate(
+        fake.data["team_data_by_id"][t]), {}, 12)) for rank, t in ((1, "T2"), (2, "T3"), (4, "T4"))]
+    radar = clause_radar(rivals, 4_000_000, NOW)
+    assert [t.player.name for t in radar.affordable] == ["Star", "Cheap"]  # best first
+    assert [t.player.name for t in radar.unlocking_soon] == ["Soon"]
+    assert [t.player.name for t in radar.out_of_reach] == ["Big"]
+    every = {t.player.name for t in radar.affordable + radar.unlocking_soon + radar.out_of_reach}
+    assert "Shielded" not in every and "Locked" not in every
+
+
+# -- price history -------------------------------------------------------------
+
+
+def test_price_history_tracks_changes(tmp_path):
+    def p(pid, value):
+        return Player.model_validate({"id": pid, "nickname": pid, "marketValue": value})
+
+    path = tmp_path / "state" / "history.sqlite"
+    with PriceHistory(path) as h:
+        h.record(date(2026, 11, 1), [p("A", 100), p("B", 100)])
+        h.record(date(2026, 11, 3), [p("A", 150), p("B", 60), p("C", 10)])
+        assert h.change(date(2026, 11, 3), 1) == {"A": 50, "B": -40}  # nearest older day
+        risers, fallers = h.movers(date(2026, 11, 3), 1, 5)
+        assert [m.player_id for m in risers] == ["A"] and fallers[0].delta == -40
+        assert h.change(date(2026, 11, 3), 5) == {}  # nothing that old
+        h.record(date(2026, 11, 3), [p("A", 160)])  # same day again: replaced, not duplicated
+        assert h.change(date(2026, 11, 3), 1)["A"] == 60
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+# -- the briefing --------------------------------------------------------------
+
+
+async def test_briefing_end_to_end(league, scout_client, settings, alerter, seeded_store):
+    messages = await run_briefing(scout_client, settings, alerter, now=NOW, sleep=no_sleep)
+    text = "\n\n".join(messages)
+    assert alerter.messages == messages
+    assert all(len(m) <= 4096 for m in messages)
+
+    assert "1. Ana 1100 · 2. Bea 1000 · 3. You 900 · 4. Carl 800 · 200 behind Ana" in text
+    assert "Cash 4.00M · max bid 24.00M" in text
+    # Readiness and lineup
+    assert "Not ready (jornada 12 starts Sat 14 Nov 21:00)" in text
+    assert "Hurt (DEF) is injured but in your lineup." in text
+    assert "Out: Hurt" in text and "Def D" in text.split("In:")[1]
+    # Market: own listing excluded, injured filtered, affordability flags
+    market = text.split("🛒")[1].split("🎯")[0]
+    assert "closes Sat 14 Nov 13:20" in market
+    assert "Isco" in market and "✓" in market
+    assert "Over your max bid: Pricey (40.00M" in market
+    assert market.index("Isco") < market.index("Listed") < market.index("Pricey")
+    assert "Listed" in market and "⚠ credit" in market.split("Listed")[1].splitlines()[0]
+    assert "Crocked" not in market and "Fwd B" not in market
+    # Clauses
+    clauses = text.split("🎯")[1].split("🛡️")[0]
+    assert "Star (FWD) from Ana (#1) · clause 3.00M" in clauses
+    assert "Soon (MID) from Ana" in clauses and "Big (FWD)" in clauses
+    assert "Shielded" not in clauses
+    exposure = text.split("🛡️")[1]
+    assert "Fwd A (FWD)" in exposure  # open clause, not shielded
+    assert "Keeper" not in exposure.split("Shield")[0]  # shielded
+    assert "Mid A" not in exposure.split("Shield")[0]  # still locked
+    # History and activity
+    assert "Price history started today" in text
+    assert "Ana clausuló a Fwd X" in text and "Old news" not in text
+    assert (settings.state_dir / "history.sqlite").exists()
+
+
+async def test_second_day_shows_price_moves(league, scout_client, settings, alerter, seeded_store):
+    await run_briefing(scout_client, settings, alerter, now=NOW - timedelta(days=1),
+                       send=False, sleep=no_sleep)
+    for p in league.data["players"]:
+        if p["id"] == "P40":
+            p["marketValue"] += 1_500_000
+    messages = await run_briefing(scout_client, settings, alerter, now=NOW, send=False, sleep=no_sleep)
+    text = "\n".join(messages)
+    assert "Your players since yesterday: Fwd A +1.50M" in text
+    assert alerter.messages == []  # send=False
+
+
+async def test_briefing_survives_a_broken_endpoint(league, scout_client, settings, alerter,
+                                                   seeded_store):
+    import httpx
+
+    league.overrides["market"] = httpx.Response(500, json={"message": "down"})
+    messages = await run_briefing(scout_client, settings, alerter, now=NOW, sleep=no_sleep)
+    text = "\n".join(messages)
+    assert "Market: nothing listed, or it couldn't be loaded." in text
+    assert "Missing today: market: HTTP 500: down" in text
+    assert "Clause steals" in text  # the rest still arrives
+
+
+def test_pack_splits_long_briefings():
+    messages = pack(["a" * 3000, "b" * 3000, "c" * 10])
+    assert len(messages) == 2 and messages[1].endswith("c" * 10)
+
+
+def test_money_formatting():
+    assert (money(16_554_348), money(603_150), money(-1_500_000)) == ("16.55M", "603k", "−1.50M")
+
+
+# -- the kickoff guard ---------------------------------------------------------
+
+
+async def test_guard_alerts_once_then_again_before_kickoff(league, scout_client, settings,
+                                                           alerter, seeded_store):
+    league.data["team_money"] = {"teamMoney": -1_500_000}
+    first = await run_guard(scout_client, settings, alerter, now=NOW, sleep=no_sleep)
+    assert first.startswith("⏰ Jornada 12 starts in 12h")
+    assert "0 points" in first and "Hurt (DEF) is injured" in first
+    assert "Bench players whose value covers the 1.50M" in first
+    assert await run_guard(scout_client, settings, alerter, now=NOW + timedelta(hours=1),
+                           sleep=no_sleep) is None  # already told
+    final = await run_guard(scout_client, settings, alerter, now=NOW + timedelta(hours=10),
+                            sleep=no_sleep)
+    assert final.startswith("⏰ Jornada 12 starts in 2h")
+    assert len(alerter.messages) == 2
+    state = json.loads((settings.state_dir / "guard.json").read_text())
+    assert len(state["sent"]) == 2
+
+
+async def test_guard_is_quiet_when_ready_or_far_away(league, scout_client, settings, alerter,
+                                                     seeded_store):
+    # Far from kickoff: quiet even with problems.
+    assert await run_guard(scout_client, settings, alerter, now=NOW - timedelta(days=2),
+                           sleep=no_sleep) is None
+    # Ready: fix the lineup, positive balance.
+    league.data["current_lineup"]["formation"]["defender"][0] = {"playerTeamId": "PT24"}
+    assert await run_guard(scout_client, settings, alerter, now=NOW, sleep=no_sleep) is None
+    assert alerter.messages == []
+
+
+async def test_guard_dry_run_does_not_suppress_the_real_alert(league, scout_client, settings,
+                                                              alerter, seeded_store):
+    assert await run_guard(scout_client, settings, alerter, now=NOW, send=False, sleep=no_sleep)
+    assert not (settings.state_dir / "guard.json").exists()
+    assert await run_guard(scout_client, settings, alerter, now=NOW, sleep=no_sleep)
+    assert len(alerter.messages) == 1
+
+
+async def test_gather_reads_only_your_team_for_the_guard(league, scout_client, settings, seeded_store):
+    view = await gather(scout_client, settings, NOW, rivals=False, market=False, details=False,
+                        activity=False, sleep=no_sleep)
+    assert list(view.squads) == ["T1"]
+    assert league.get_calls("market") == [] and league.get_calls("player_details") == []
+    assert view.balance == 4_000_000 and view.week == 12
+    assert view.now.tzinfo == CET
+
+
+async def test_times_show_in_the_configured_timezone(league, scout_client, settings, alerter,
+                                                    seeded_store):
+    settings.timezone = "Australia/Sydney"  # 21:00 in Madrid is 07:00 next morning there
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    assert "jornada 12 starts Sun 15 Nov 07:00" in text
+    assert "☀️ FantasyBot · jornada 12 · Sat 14 Nov" in text  # 20:00 on the 14th in Sydney
+
+
+def test_unknown_timezone_falls_back_to_utc(settings):
+    from datetime import timezone
+
+    settings.timezone = "Mars/Olympus"
+    assert settings.display_tz() is timezone.utc
+
+
+def test_cli_briefing_prints_without_sending(tmp_path, monkeypatch, capsys, fake, router):
+    import functools
+
+    import httpx
+    from cryptography.fernet import Fernet
+
+    import fantasybot.cli as cli
+    from fantasybot.auth import TokenStore
+    from fantasybot.runtime import open_runtime
+
+    scout_league.build(fake)
+    key = Fernet.generate_key()
+    monkeypatch.setenv("FANTASYBOT_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("FANTASYBOT_TOKEN_KEY", key.decode())
+    monkeypatch.setenv("FANTASYBOT_REQUEST_DELAY", "0")
+    seed(TokenStore(tmp_path / "tokens.enc", key), id_exp=2_000_000_000)
+    monkeypatch.setattr(cli, "open_runtime",
+                        functools.partial(open_runtime, transport=httpx.MockTransport(router)))
+    assert cli.main(["briefing", "--no-send"]) == 0
+    out = capsys.readouterr().out
+    assert "Clause steals you can pay now" in out and "Best XI" in out
+    assert (tmp_path / "history.sqlite").exists()
+    assert cli.main(["guard", "--no-send", "--hours", "0"]) == 0  # nothing within 0h
+    assert "Nothing to fix" in capsys.readouterr().out

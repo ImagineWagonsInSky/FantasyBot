@@ -28,6 +28,9 @@ from .fixtures import FixtureRecorder
 from .healthcheck import HealthCheck, run_and_alert
 from .redact import redact
 from .runtime import Runtime, open_runtime
+from .scout.briefing import BriefingError, run_briefing
+from .scout.guard import run_guard
+from .scout.history import PriceHistory
 
 log = logging.getLogger("fantasybot")
 
@@ -301,6 +304,38 @@ async def cmd_telegram(rt: Runtime, args: argparse.Namespace) -> int:
     return 0 if sent else 1
 
 
+async def cmd_briefing(rt: Runtime, args: argparse.Namespace) -> int:
+    try:
+        messages = await run_briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send)
+    except BriefingError as exc:
+        print(f"Briefing failed: {exc}", file=sys.stderr)
+        return 1
+    print("\n\n".join(messages))
+    return 0
+
+
+async def cmd_guard(rt: Runtime, args: argparse.Namespace) -> int:
+    try:
+        message = await run_guard(rt.client, rt.settings, rt.alerter, send=not args.no_send,
+                                  window_hours=args.hours)
+    except BriefingError as exc:
+        print(f"Guard failed: {exc}", file=sys.stderr)
+        return 1
+    print(message or "Nothing to fix before the next jornada.")
+    return 0
+
+
+async def cmd_snapshot(rt: Runtime, args: argparse.Namespace) -> int:
+    import datetime as dt
+
+    players = await rt.client.get_all_players()
+    with PriceHistory(rt.settings.state_dir / "history.sqlite") as history:
+        count = history.record(dt.datetime.now(rt.settings.display_tz()).date(), players)
+        days = len(history.days())
+    print(f"Recorded {count} player values (history now covers {days} day(s)).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fantasybot",
@@ -334,6 +369,14 @@ def build_parser() -> argparse.ArgumentParser:
     tg_sub.add_parser("test", help="send a test alert")
     tg_sub.add_parser("set-token", help="store the bot token pasted on stdin (not shown on screen)")
 
+    brief = sub.add_parser("briefing", help="today's lineup, market, clause and rival briefing")
+    brief.add_argument("--no-send", action="store_true", help="print it, don't send it to Telegram")
+    guard = sub.add_parser("guard", help="alert only if the next jornada would cost you points")
+    guard.add_argument("--no-send", action="store_true", help="print it, don't send it to Telegram")
+    guard.add_argument("--hours", type=float, default=24.0,
+                       help="start warning this many hours before kickoff (default 24)")
+    sub.add_parser("snapshot", help="record today's player values in the price history")
+
     sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
     sub.add_parser("about", help="version, license and credits")
     return parser
@@ -349,6 +392,12 @@ async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
             return await cmd_healthcheck(rt, args)
         if args.command == "telegram":
             return await cmd_telegram(rt, args)
+        if args.command == "briefing":
+            return await cmd_briefing(rt, args)
+        if args.command == "guard":
+            return await cmd_guard(rt, args)
+        if args.command == "snapshot":
+            return await cmd_snapshot(rt, args)
     raise AssertionError(f"unhandled command {args.command}")
 
 

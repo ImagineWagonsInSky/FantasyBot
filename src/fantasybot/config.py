@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from datetime import timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -87,6 +89,7 @@ class Settings(BaseSettings):
     refresh_attempts: int = 3  # tries for transient B2C failures before freezing
     refresh_token_warn_days: float = 3.0
     request_delay: float = 0.5  # pause between health-check calls (API rate-limits)
+    timezone: str = "Europe/Madrid"  # how times are shown; LaLiga's own clock by default
 
     # Storage and secrets.
     state_dir: Path = Field(default_factory=_default_state_dir)
@@ -104,6 +107,13 @@ class Settings(BaseSettings):
     @property
     def freeze_path(self) -> Path:
         return self.state_dir / "frozen.json"
+
+    def display_tz(self) -> tzinfo:
+        try:
+            return ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            log.warning("unknown FANTASYBOT_TIMEZONE %r; showing times in UTC", self.timezone)
+            return timezone.utc
 
     def resolved_token_key(self) -> bytes:
         if self.token_key is not None:

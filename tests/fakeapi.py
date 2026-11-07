@@ -134,7 +134,17 @@ class FakeLaLiga:
             return httpx.Response(404, json={"message": "no such route"})
         if name in self.overrides:
             return self.overrides[name]
-        return httpx.Response(200, content=json.dumps(self.data[name]),
+        body = self.data[name]
+        # Per-ID data, when a test provides it: a squad per team, details per
+        # player, fixtures per jornada.
+        segments = request.url.path.split("/")
+        if name == "team_data" and "team_data_by_id" in self.data:
+            body = self.data["team_data_by_id"].get(segments[segments.index("teams") + 1], body)
+        if name == "player_details" and "player_details_by_id" in self.data:
+            body = self.data["player_details_by_id"].get(segments[segments.index("player") + 1], body)
+        if name == "matchday" and "matchday_by_week" in self.data:
+            body = self.data["matchday_by_week"].get(request.url.params.get("weekNumber"), [])
+        return httpx.Response(200, content=json.dumps(body),
                               headers={"content-type": "application/json"})
 
     def get_calls(self, name: str) -> list[httpx.Request]:

@@ -1,5 +1,5 @@
 [Unit]
-Description=FantasyBot daily LaLiga API health check
+Description=FantasyBot daily health check and briefing
 Wants=network-online.target
 After=network-online.target
 
@@ -8,7 +8,10 @@ Type=oneshot
 User=fantasybot
 Group=fantasybot
 EnvironmentFile=/etc/fantasybot/fantasybot.env
-ExecStart=/opt/fantasybot/.venv/bin/fantasybot healthcheck
+# The leading - lets the briefing run even when the health check found problems
+# (it has already alerted on Telegram).
+ExecStart=-/opt/fantasybot/.venv/bin/fantasybot healthcheck
+ExecStart=/opt/fantasybot/.venv/bin/fantasybot briefing
 StateDirectory=fantasybot
 StateDirectoryMode=0700
 UMask=0077

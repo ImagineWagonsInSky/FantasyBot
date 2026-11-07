@@ -24,6 +24,10 @@ when it doesn't.
   - Prints a report, and sends one Telegram message if anything broke.
   - Can also save anonymised copies of the responses, so the models can be
     tightened against real data.
+- **Scouting** (`fantasybot briefing`, `fantasybot guard`). A morning briefing
+  on Telegram, and an hourly guard that only speaks up when the next jornada
+  would cost you points. Both only read from LaLiga: they recommend, and you
+  act in the app. See [The daily briefing](#the-daily-briefing).
 
 There are two ways to run it:
 
@@ -100,8 +104,16 @@ in its container.
    ./fb healthcheck --no-alert
    ```
 
-5. **Run it every day.** The default is 09:20 local time; give another time
-   as `HH:MM`.
+   Then preview today's briefing without sending it:
+
+   ```bash
+   ./fb briefing --no-send
+   ```
+
+5. **Run it every day.** This installs the morning briefing (with the health
+   check) and the hourly kickoff guard. The default is 09:20 local time; give
+   another time as `HH:MM`. Pick a time before your league's market closes
+   (shown in the briefing), so you can still bid.
 
    ```bash
    ./fb schedule install
@@ -119,7 +131,9 @@ in its container.
 
 | Command | What it does |
 | --- | --- |
-| `./fb schedule status` | Is the daily run installed, and what did it last report |
+| `./fb briefing --no-send` | Print today's briefing (without `--no-send`, also send it) |
+| `./fb guard --no-send` | Would the next jornada cost you points right now? |
+| `./fb schedule status` | Are the scheduled runs installed, and what did they last report |
 | `./fb auth status` | Session expiry, refresh-token expiry, freeze state |
 | `./fb healthcheck --no-alert` | Run the check now without messaging Telegram |
 | `./fb fixtures` | Save anonymised API responses to `fixtures-capture/` |
@@ -139,7 +153,7 @@ Everything that persists lives in two Docker volumes:
 
 | Volume | Holds |
 | --- | --- |
-| `fantasybot_state` | The encrypted LaLiga session, and the write-freeze marker |
+| `fantasybot_state` | The encrypted LaLiga session, the write-freeze marker, the price history (`history.sqlite`) and which guard alerts were sent |
 | `fantasybot_secrets` | The key that decrypts it, and the Telegram bot token |
 
 The volumes live inside Docker, not in your home folder, so Time Machine,
@@ -172,6 +186,65 @@ the token behind on the laptop.
    ```bash
    docker volume rm fantasybot_state fantasybot_secrets
    ```
+
+## The daily briefing
+
+Every morning, one Telegram message (two if it's long) with what's worth
+acting on today:
+
+- **Standing and money.** Where you are, the gap to the leader, your cash,
+  and your maximum bid (cash + 20% of team value).
+- **Readiness.** Anything that would cost points in the next jornada: a
+  negative balance, an incomplete lineup, injured or suspended starters,
+  players you've sold still in the lineup. Doubts, and starters who didn't
+  play last jornada, are listed as warnings.
+- **Best XI.** The lineup and formation with the most expected points from
+  your squad, the gain over your saved lineup, and who to swap. It never
+  changes your lineup; you do that in the app.
+- **Market.** The best five players you can actually bid on before the
+  market closes, marked ✓ (payable from cash) or ⚠ (needs credit: you must
+  be back above 0 by kickoff). Players over your maximum bid get one line.
+- **Clause steals.** Rival players you can take right now by paying their
+  buyout clause from cash (debt isn't allowed for clauses), best first and
+  with the owner's rank. Also: players unlocking in the next 24h, and the
+  best target you can't afford yet. Shielded players are left out.
+- **Your exposure.** Your players any rival could take right now, and which
+  two to shield. Shielding is free, lasts 24h without Premium, and you do it
+  in the app. Raising a clause costs half the increase.
+- **Price moves.** Your players' and the league's biggest risers and fallers
+  since yesterday. LaLiga's API only gives today's values, so the bot keeps
+  its own history; trends appear from the second day.
+- **League moves.** What happened in the league in the last 24h.
+
+**Expected points** are deliberately simple, so you can see why one player
+ranks above another:
+
+- 60% recent form (the last three finished jornadas, counting jornadas a
+  player didn't play as 0) plus 40% season average.
+- Injured or suspended: 0. Doubt: half.
+- A fit player who didn't play last jornada: ×0.7 (rotation risk).
+
+The model doesn't know about fixtures or probable lineups yet.
+
+**The kickoff guard** runs every hour and stays silent unless the jornada
+starts within 24h and something would cost you points. It alerts once when it
+first sees a problem, and once more 3h before kickoff if it's still there.
+
+### The rules that matter
+
+These come from LaLiga's help centre, guides, and real responses from the
+API. Check anything marked "guide" in the app before relying on it.
+
+| Rule | Source |
+| --- | --- |
+| A negative balance when the jornada starts scores 0 points for it | [LaLiga help](https://laligafantasy.zendesk.com/hc/en-us/articles/115002391113-What-does-it-mean-to-be-in-the-red-or-have-a-negative-balance) |
+| Max bid = cash + 20% of squad value; clauses can't be paid on debt | [LaLiga help](https://laligafantasy.zendesk.com/hc/en-us/articles/360007533594-Can-I-keep-a-negative-balance) |
+| Raising a clause costs half the increase | [LaLiga help](https://laligafantasy.zendesk.com/hc/en-us/articles/360025683593-How-are-release-clauses-set) |
+| Clauses in practice sit at or just above market value | the API |
+| Blind bids, highest wins, ties go to the first bid; minimum bid = market value | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), LaLigaApp |
+| Recently signed players are locked from clause steals for a while; the API gives the exact unlock time | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), the API |
+| Shield: free, 2 players, 24h (48h with Premium), only on open clauses | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), [DAZN](https://www.dazn.com/es-ES/news/f%C3%BAtbol/que-es-blindaje-laliga-fantasy-como-funciona/p2wqlqgud2ls1s0o2z5ypimpl) |
+| Points come from Opta stats plus a 0–4 bonus (`marca_points` in the API) | [LaLiga](https://www.laliga.com/en-FR/news/a-new-version-of-laliga-fantasy-launches-with-100percent-objective-scoring), the API |
 
 ## Getting your LaLiga token
 
@@ -229,7 +302,8 @@ as unset.
 | `FANTASYBOT_TEAM_ID` | discovered | your team in that league |
 | `FANTASYBOT_TELEGRAM_CHAT_ID` | | without it, alerts only go to the log |
 | `FANTASYBOT_REFRESH_TOKEN_WARN_DAYS` | `3` | warn this long before the refresh token expires |
-| `FANTASYBOT_REQUEST_DELAY` | `0.5` | seconds between health-check calls |
+| `FANTASYBOT_REQUEST_DELAY` | `0.5` | seconds between API calls in the health check and briefing |
+| `FANTASYBOT_TIMEZONE` | `Europe/Madrid` | timezone for times in the briefing and alerts |
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
