@@ -24,9 +24,11 @@ from typing import Any
 
 from .auth.store import write_private_file
 
+# Enum-like numbers that happen to be named *Id: keep them, they aren't identities.
+KEEP_VALUE_KEYS = frozenset({"positionId", "activityTypeId"})
 KEEP_STRING_KEYS = frozenset({
     "discr", "status", "playerStatus", "type", "position", "positionName", "matchState",
-    "key", "option", "formation", "rewardedAdType", "currency", "lang",
+    "key", "option", "formation", "rewardedAdType", "currency", "lang", "leagueType",
 })
 _ID_KEY = re.compile(r"(^id$|Id$|_id$|^uuid$|^oid$|^sub$)")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$")
@@ -46,7 +48,7 @@ class Anonymiser:
             return {k: self.scrub(v, str(k)) for k, v in value.items()}
         if isinstance(value, list):
             return [self.scrub(v, key) for v in value]
-        if value is None or isinstance(value, bool):
+        if value is None or isinstance(value, bool) or key in KEEP_VALUE_KEYS:
             return value
         if key is not None and _ID_KEY.search(key) and isinstance(value, (int, str)):
             return self._fake_id(value)

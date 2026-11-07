@@ -1,0 +1,426 @@
+[
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id84",
+      "teamId": 18,
+      "name": "xxxxxxxxxxxx",
+      "nickname": "xxxxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 9,
+      "position": "Entrenador",
+      "marketValue": 1025558,
+      "playerStatus": "ok",
+      "points": 5,
+      "averagePoints": 1.6666666666666667
+    },
+    "id": "id85",
+    "salePrice": 1025558,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id87",
+      "teamId": 25,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 82,
+      "nickname": "xxxxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 9,
+      "position": "Entrenador",
+      "marketValue": 2015456,
+      "playerStatus": "ok",
+      "points": 21,
+      "averagePoints": 1.9090909090909092
+    },
+    "id": "id88",
+    "salePrice": 2015456,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id89",
+      "teamId": 90,
+      "name": "xxxxxxxxxx",
+      "lastSeasonPoints": 42,
+      "nickname": "xxxxx",
+      "slug": "xxxxx",
+      "positionId": 19,
+      "position": "Centrocampista",
+      "marketValue": 1873291,
+      "playerStatus": "ok",
+      "points": 3,
+      "averagePoints": 0.75
+    },
+    "id": "id91",
+    "salePrice": 1873291,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id92",
+      "teamId": 93,
+      "name": "xxxxxxxxxxxx",
+      "nickname": "xxxxxxxx",
+      "slug": "xxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 1972136,
+      "playerStatus": "ok",
+      "points": -1,
+      "averagePoints": -0.1
+    },
+    "id": "id94",
+    "salePrice": 1972136,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id95",
+      "teamId": 96,
+      "name": "xxxxxxxxxx",
+      "lastSeasonPoints": 152,
+      "nickname": "xxxxxxxxxx",
+      "slug": "xxxxxxxxxx",
+      "positionId": 12,
+      "position": "Delantero",
+      "marketValue": 34771472,
+      "playerStatus": "ok",
+      "points": 55,
+      "averagePoints": 5
+    },
+    "id": "id97",
+    "salePrice": 34771472,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id98",
+      "teamId": 90,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 76,
+      "nickname": "xxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 3999938,
+      "playerStatus": "ok",
+      "points": 31,
+      "averagePoints": 3.1
+    },
+    "id": "id99",
+    "salePrice": 3999938,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id100",
+      "teamId": 101,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 134,
+      "nickname": "xxxxxxxxxxxx",
+      "slug": "xxxxxxx",
+      "positionId": 19,
+      "position": "Centrocampista",
+      "marketValue": 1442370,
+      "playerStatus": "injured",
+      "points": 31,
+      "averagePoints": 2.8181818181818183
+    },
+    "id": "id102",
+    "salePrice": 1442370,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id103",
+      "teamId": 22,
+      "name": "xxxxxxxxxxxx",
+      "nickname": "xxxxxxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 19,
+      "position": "Centrocampista",
+      "marketValue": 1327796,
+      "playerStatus": "ok",
+      "points": 25,
+      "averagePoints": 2.272727272727273
+    },
+    "id": "id104",
+    "salePrice": 1327796,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id105",
+      "teamId": 101,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 0,
+      "nickname": "xxxxxxxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 603150,
+      "playerStatus": "ok",
+      "points": 0,
+      "averagePoints": 0
+    },
+    "id": "id106",
+    "salePrice": 603150,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id107",
+      "teamId": 108,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 207,
+      "nickname": "xxxxxxxxxx",
+      "slug": "xxxxxxxxxxxx",
+      "positionId": 12,
+      "position": "Delantero",
+      "marketValue": 44419706,
+      "playerStatus": "ok",
+      "points": 64,
+      "averagePoints": 5.818181818181818
+    },
+    "id": "id109",
+    "salePrice": 44419706,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id110",
+      "teamId": 6,
+      "name": "xxxxxxxxxxxx",
+      "nickname": "xxxxxxxx",
+      "slug": "xxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 97688483,
+      "playerStatus": "ok",
+      "points": 95,
+      "averagePoints": 8.636363636363637
+    },
+    "id": "id111",
+    "salePrice": 97688483,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id112",
+      "teamId": 113,
+      "name": "xxxxxxxxxxxx",
+      "lastSeasonPoints": 0,
+      "nickname": "xxxxxx",
+      "slug": "xxxxxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 605919,
+      "playerStatus": "ok",
+      "points": 0,
+      "averagePoints": 0
+    },
+    "id": "id114",
+    "salePrice": 605919,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerLeague",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id115",
+      "teamId": 15,
+      "name": "xxxxxxxxxx",
+      "nickname": "xxxxxxxxxx",
+      "slug": "xxxxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 603150,
+      "playerStatus": "ok",
+      "points": 0,
+      "averagePoints": 0
+    },
+    "id": "id116",
+    "salePrice": 603150,
+    "expirationDate": "2026-11-08T13:20:00+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfBids": 0
+  },
+  {
+    "discr": "marketPlayerTeam",
+    "playerMaster": {
+      "images": {
+        "transparent": {
+          "256x256": "https://example.invalid/redacted"
+        }
+      },
+      "id": "id117",
+      "teamId": 25,
+      "name": "xxxxxxxxxxxx",
+      "nickname": "xxxxxxxx",
+      "slug": "xxxxxxxx",
+      "positionId": 6,
+      "position": "Defensa",
+      "marketValue": 9756818,
+      "playerStatus": "ok",
+      "points": 3,
+      "averagePoints": 1
+    },
+    "playerTeam": {
+      "buyoutClause": 10177264,
+      "playerTeamId": "id118",
+      "buyoutClauseLockedEndTime": "2026-11-06T13:20:13+01:00",
+      "isShielded": false,
+      "manager": {
+        "id": "id49",
+        "managerName": "xxxxxxxxxxxx",
+        "avatar": "https://example.invalid/redacted"
+      }
+    },
+    "id": "id119",
+    "salePrice": 10032546,
+    "expirationDate": "2026-11-07T17:44:44+01:00",
+    "status": "on_sale",
+    "leagueType": "xxxxxxx",
+    "leagueId": 86,
+    "numberOfOffers": 1,
+    "directOffer": false,
+    "sellerTeam": {
+      "teamMoney": null,
+      "id": "id80",
+      "managerId": 49,
+      "teamValue": 588868841,
+      "teamPoints": 375,
+      "manager": {
+        "id": "id49",
+        "managerName": "xxxxxxxxxxxx",
+        "avatar": "https://example.invalid/redacted"
+      }
+    }
+  }
+]

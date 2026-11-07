@@ -217,7 +217,7 @@ class HealthCheck:
             # Offers are only fetched for your own listings that have offers,
             # as LaLigaApp does; there may be none today.
             with_offers = next((i for i in items if i.playerTeam and i.playerTeam.playerTeamId
-                                and same_id(i.playerTeam.teamId, ctx.get("team_id"))
+                                and same_id(i.seller_team_id, ctx.get("team_id"))
                                 and (i.numberOfOffers or 0) > 0), None)
             ctx["offer_player_team_id"] = with_offers.playerTeam.playerTeamId if with_offers else None
             ctx["market_checked"] = True

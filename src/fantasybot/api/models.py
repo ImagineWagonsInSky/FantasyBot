@@ -86,26 +86,54 @@ class TeamRef(ApiModel):
 # -- players -----------------------------------------------------------------
 
 
+class PlayerWeek(ApiModel):
+    """One jornada in playerStats. Each stat is [raw value, points it scored],
+    e.g. "saves": [4, 2]; the points add up to totalPoints."""
+
+    weekNumber: int | None = None
+    totalPoints: Number | None = None
+    stats: dict[str, list[Number]] | None = None
+    isInIdealFormation: bool | None = None
+
+    @property
+    def minutes(self) -> Number | None:
+        played = (self.stats or {}).get("mins_played")
+        return played[0] if played else None
+
+
 class Player(ApiModel):
     """A player master record (/players, playerMaster objects, /player/{id})."""
 
     id: Id
     nickname: str | None = None
     name: str | None = None
-    positionId: int | None = None
+    positionId: int | None = None  # 1 GK, 2 DEF, 3 MID, 4 FWD, 5 coach
+    position: str | None = None  # "Portero", "Defensa", … "Entrenador"
     marketValue: int | None = None
     points: Number | None = None
+    weekPoints: Number | None = None
     averagePoints: Number | None = None
-    playerStatus: str | None = None
+    lastSeasonPoints: Number | None = None
+    playerStatus: str | None = None  # "ok", "doubt", "injured", "suspended"
     teamId: Id | None = None
     team: TeamRef | None = None
     images: dict[str, Any] | None = None
     lastStats: list[Any] | None = None
-    playerStats: list[Any] | None = None
+    playerStats: list[PlayerWeek] | None = None
 
     @property
     def display_name(self) -> str:
         return self.nickname or self.name or str(self.id)
+
+
+class ClauseInfo(ApiModel):
+    """An owned player's clause state (playerTeam in player details)."""
+
+    playerTeamId: Id | None = None
+    buyoutClause: int | None = None
+    buyoutClauseLockedEndTime: str | None = None
+    isShielded: bool | None = None
+    manager: StandingManager | None = None
 
 
 class MarketPlayer(ApiModel):
@@ -119,6 +147,8 @@ class PlayerDetails(ApiModel):
     playerMaster: Player
     marketPlayer: MarketPlayer | None = None
     seasons: list[Any] | None = None
+    manager: StandingManager | None = None  # the owner in this league, if owned
+    playerTeam: ClauseInfo | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -182,6 +212,7 @@ class TeamPlayer(ApiModel):
     playerMaster: Player
     buyoutClause: int | None = None
     buyoutClauseLockedEndTime: str | None = None
+    isShielded: bool | None = None
     purchasePrice: int | None = None
     playerMarket: Any = None
 
@@ -245,6 +276,10 @@ class MarketBid(ApiModel):
 class MarketPlayerTeam(ApiModel):
     playerTeamId: Id | None = None
     teamId: Id | None = None
+    buyoutClause: int | None = None
+    buyoutClauseLockedEndTime: str | None = None
+    isShielded: bool | None = None
+    manager: StandingManager | None = None
 
 
 class MarketItem(ApiModel):
@@ -259,7 +294,15 @@ class MarketItem(ApiModel):
     numberOfBids: int | None = None
     numberOfOffers: int | None = None
     bid: MarketBid | None = None
-    sellerTeam: dict[str, Any] | None = None
+    status: str | None = None
+    directOffer: bool | None = None
+    sellerTeam: dict[str, Any] | None = None  # id, teamValue, teamPoints; teamMoney is hidden
+
+    @property
+    def seller_team_id(self) -> Id | None:
+        if self.sellerTeam and self.sellerTeam.get("id") is not None:
+            return self.sellerTeam["id"]
+        return self.playerTeam.teamId if self.playerTeam else None
 
 
 class Offer(ApiModel):
@@ -332,3 +375,6 @@ class WriteResult(BaseModel):
     body: dict[str, Any] | None = None
     status_code: int | None = None
     data: Any = None
+
+
+PlayerDetails.model_rebuild()
