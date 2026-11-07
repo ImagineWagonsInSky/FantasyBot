@@ -77,7 +77,9 @@ DATA: dict[str, Any] = {
     "match_stats": [{"id": "G1", "players": []}],
     "team_money": {"teamMoney": 2_500_000},
     "player_offer": [{"id": "O1", "money": 13_000_000, "status": "pending", "bidderTeam": {"id": "T2"}}],
-    "player_details": {"id": "P1", "nickname": "Pedri", "points": 80, "averagePoints": 6.7},
+    "player_details": {"playerMaster": {"id": "P1", "nickname": "Pedri", "points": 80,
+                                        "averagePoints": 6.7, "playerStats": []},
+                       "marketPlayer": None, "seasons": []},
     "check_player_shield": {},
 }
 

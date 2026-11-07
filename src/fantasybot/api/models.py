@@ -108,8 +108,26 @@ class Player(ApiModel):
         return self.nickname or self.name or str(self.id)
 
 
-class PlayerDetails(Player):
-    pass
+class MarketPlayer(ApiModel):
+    salePrice: int | None = None
+
+
+class PlayerDetails(ApiModel):
+    """/player/{id}/league/{id}: the player wrapped in `playerMaster`, plus its
+    market listing in this league (if any) and past seasons."""
+
+    playerMaster: Player
+    marketPlayer: MarketPlayer | None = None
+    seasons: list[Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_a_flat_player(cls, value: Any) -> Any:
+        # A bare player record (no playerMaster) is accepted too, as LaLigaApp's
+        # name lookups do.
+        if isinstance(value, dict) and "playerMaster" not in value and "id" in value:
+            return {"playerMaster": value}
+        return value
 
 
 # -- standings and activity --------------------------------------------------

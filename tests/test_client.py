@@ -243,3 +243,15 @@ async def test_teams_master_failure_degrades_gracefully(client, fake):
     fake.overrides["teams_master"] = httpx.Response(500)
     players = await client.get_all_players()
     assert players[0].team.id == "3" and players[0].team.name is None
+
+
+async def test_player_details_are_wrapped_in_player_master(client, fake):
+    details = await client.get_player_details("P1", LEAGUE)
+    assert details.playerMaster.nickname == "Pedri" and details.seasons == []
+
+    fake.data["player_details"] = {"id": "P1", "nickname": "Pedri"}  # flat shape still accepted
+    assert (await client.get_player_details("P1", LEAGUE)).playerMaster.id == "P1"
+
+    fake.data["player_details"] = {"seasons": []}  # neither shape: a real breakage
+    with pytest.raises(ResponseShapeError, match="playerMaster: Field required"):
+        await client.get_player_details("P1", LEAGUE)
