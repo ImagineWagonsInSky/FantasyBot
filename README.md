@@ -136,6 +136,13 @@ LaLiga retired email/password login for third-party apps, so the first
 token has to come from a browser. This is the same manual method LaLigaApp
 documents.
 
+miliga.laliga.com is LaLiga's account site, not the game: it won't show
+your Fantasy league or team, and it doesn't need to. You only sign in there
+so LaLiga issues a token for your account, and the Fantasy API then finds
+your leagues from it. **Sign in the same way you sign in to the Fantasy
+app** (same email, or the same Google or Apple account). A different login
+method can mean a different LaLiga account with no Fantasy team.
+
 1. On a PC, open <https://miliga.laliga.com/> in Chrome or Firefox and press
    **F12** to open the developer tools. Go to the **Network** tab.
 2. In the Network filter box, type `token?p=B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN`.
@@ -152,7 +159,9 @@ documents.
    precaution, since it isn't known whether logging out revokes the token.
 
 `auth import` redeems the token once straight away. That proves it works,
-and the copy you pasted is replaced by a freshly rotated one.
+and the copy you pasted is replaced by a freshly rotated one. Then run
+`fantasybot-admin healthcheck --no-alert`: if `leagues` shows OK, the token
+reaches your Fantasy league.
 
 ### 5. First run, then schedule it
 
