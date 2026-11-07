@@ -1,0 +1,297 @@
+"""Command line entry point: `fantasybot ...`."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+import sys
+import time
+from pathlib import Path
+
+from . import ATTRIBUTION, __version__
+from .auth import (
+    AuthUnavailable,
+    FreezeGuard,
+    TokenImportError,
+    TokenStore,
+    TokenStoreError,
+    parse_token_paste,
+)
+from .config import NATIVE_CLIENT_ID, WEB_CLIENT_ID, ConfigError, Settings
+from .redact import redact
+from .runtime import Runtime, open_runtime
+
+log = logging.getLogger("fantasybot")
+
+
+class RedactingFormatter(logging.Formatter):
+    """Last line of defence: no token-shaped string reaches a log."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
+def setup_logging(verbose: bool) -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    # httpx logs every request URL at INFO, and the Telegram URL contains the
+    # bot token. Keep the HTTP stack quiet even in verbose mode.
+    for name in ("httpx", "httpcore", "hpack"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+# -- reading a pasted secret -------------------------------------------------
+
+
+class PasteCollector:
+    """Collects a paste until a JSON object closes, or a line ends for a bare token."""
+
+    def __init__(self) -> None:
+        self._chars: list[str] = []
+        self._mode: str | None = None  # "json" or "line"
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+
+    @property
+    def text(self) -> str:
+        return "".join(self._chars)
+
+    def feed(self, chunk: str) -> bool:
+        """Returns True once the paste is complete."""
+        for ch in chunk:
+            if ch == "\x04":  # Ctrl-D
+                return True
+            if self._mode is None:
+                if ch.isspace():
+                    continue
+                self._mode = "json" if ch == "{" else "line"
+            if self._mode == "line":
+                if ch in "\r\n":
+                    return True
+                self._chars.append(ch)
+                continue
+            self._chars.append(ch)
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                elif ch == "\\":
+                    self._escaped = True
+                elif ch == '"':
+                    self._in_string = False
+            elif ch == '"':
+                self._in_string = True
+            elif ch == "{":
+                self._depth += 1
+            elif ch == "}":
+                self._depth -= 1
+                if self._depth == 0:
+                    return True
+        return False
+
+
+def read_paste(prompt: str) -> str:
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    import termios
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    raw = termios.tcgetattr(fd)
+    # Non-canonical mode lifts the 4096-byte line limit that truncates long
+    # single-line pastes; no echo keeps the token off screen and out of scrollback.
+    raw[3] &= ~(termios.ICANON | termios.ECHO)
+    raw[6][termios.VMIN] = 1
+    raw[6][termios.VTIME] = 0
+    print(prompt, file=sys.stderr, flush=True)
+    collector = PasteCollector()
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, raw)
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk or collector.feed(chunk.decode("utf-8", errors="replace")):
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
+    print(f"(received {len(collector.text)} characters)", file=sys.stderr)
+    return collector.text
+
+
+# -- output helpers ----------------------------------------------------------
+
+
+def _when(epoch: int | None, now: int) -> str:
+    if not epoch:
+        return "unknown"
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(epoch))
+    delta = epoch - now
+    span = abs(delta)
+    if span < 3600:
+        rel = f"{span // 60} min"
+    elif span < 172800:
+        rel = f"{span // 3600} h"
+    else:
+        rel = f"{span // 86400} days"
+    return f"{stamp} ({'in ' + rel if delta >= 0 else rel + ' ago'})"
+
+
+def _client_label(client_id: str) -> str:
+    return {WEB_CLIENT_ID: "web", NATIVE_CLIENT_ID: "native/Google"}.get(client_id, "custom")
+
+
+def print_status(settings: Settings, store: TokenStore, freeze: FreezeGuard) -> int:
+    now = int(time.time())
+    print(f"State dir:        {settings.state_dir}")
+    print(f"Dry run:          {'on (writes are simulated)' if settings.dry_run else 'OFF (writes are sent)'}")
+    code = 0
+    try:
+        bundle = store.load()
+    except TokenStoreError as exc:
+        print(f"Token:            UNUSABLE: {exc}")
+        bundle, code = None, 2
+    if bundle is None and code == 0:
+        print("Token:            none stored (run `fantasybot auth import`)")
+        code = 2
+    if bundle is not None:
+        print(f"Client ID:        {bundle.client_id} ({_client_label(bundle.client_id)})")
+        print(f"Session expires:  {_when(bundle.id_token_expires_at, now)}")
+        print(f"Refresh expires:  {_when(bundle.refresh_token_expires_at, now)}")
+        print(f"Last refresh:     {_when(bundle.refreshed_at, now)}")
+        print(f"Last rotation:    {_when(bundle.rotated_at, now)}")
+    state = freeze.state()
+    if state is None:
+        print("Writes:           allowed")
+    else:
+        print(f"Writes:           FROZEN since {_when(state.frozen_at, now)}")
+        print(f"                  reason: {state.reason}")
+        code = 2
+    return code
+
+
+# -- commands ----------------------------------------------------------------
+
+
+def cmd_gen_key(args: argparse.Namespace) -> int:
+    key = TokenStore.generate_key()
+    if args.out is None:
+        print(key.decode())
+        return 0
+    path = Path(args.out).expanduser()
+    if path.exists():
+        print(f"{path} already exists; refusing to overwrite it (the stored token would "
+              "become unreadable). Delete it yourself if you really mean to.", file=sys.stderr)
+        return 1
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(key + b"\n")
+    print(f"Wrote a new key to {path} (mode 600).")
+    print(f"Point FANTASYBOT_TOKEN_KEY_FILE at it, and back it up somewhere other than this machine.")
+    return 0
+
+
+async def cmd_import(rt: Runtime, args: argparse.Namespace) -> int:
+    text = read_paste(
+        "Paste the token JSON from miliga.laliga.com (or a bare refresh token). "
+        "It will not be shown on screen."
+    )
+    try:
+        fields = parse_token_paste(text)
+        bundle = await rt.tokens.import_token(
+            str(fields["refresh_token"]),
+            client_id=args.client_id or fields["client_id"],  # type: ignore[arg-type]
+            id_token=fields["id_token"],  # type: ignore[arg-type]
+            refresh_token_expires_in=fields["refresh_token_expires_in"],  # type: ignore[arg-type]
+            verify=not args.no_verify,
+        )
+    except (TokenImportError, AuthUnavailable) as exc:
+        print(f"Import failed: {exc}", file=sys.stderr)
+        return 1
+    verb = "Stored" if args.no_verify else "Verified with LaLiga and stored"
+    print(f"{verb} the token (client {_client_label(bundle.client_id)}).")
+    print("You can now clear your clipboard.\n")
+    return print_status(rt.settings, rt.store, rt.freeze)
+
+
+async def cmd_refresh(rt: Runtime, args: argparse.Namespace) -> int:
+    try:
+        await rt.tokens.force_refresh()
+    except AuthUnavailable as exc:
+        print(f"Refresh failed: {exc}", file=sys.stderr)
+        print_status(rt.settings, rt.store, rt.freeze)
+        return 1
+    print("Refreshed.\n")
+    return print_status(rt.settings, rt.store, rt.freeze)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fantasybot",
+        description="LaLiga Fantasy automation.",
+        epilog=ATTRIBUTION,
+    )
+    parser.add_argument("--version", action="version", version=f"fantasybot {__version__}")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    auth = sub.add_parser("auth", help="manage the stored LaLiga session")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    gen = auth_sub.add_parser("gen-key", help="create a new token encryption key")
+    gen.add_argument("--out", help="write the key to this file (mode 600) instead of stdout")
+    imp = auth_sub.add_parser("import", help="store a token pasted on stdin and lift any freeze")
+    imp.add_argument("--client-id", help="B2C client that issued the token (default: try the known ones)")
+    imp.add_argument("--no-verify", action="store_true",
+                     help="store without redeeming it first (needs the full JSON)")
+    auth_sub.add_parser("status", help="show session expiry and freeze state (never prints tokens)")
+    auth_sub.add_parser("refresh", help="redeem the refresh token now")
+
+    sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
+    sub.add_parser("about", help="version, license and credits")
+    return parser
+
+
+async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
+    async with open_runtime(settings) as rt:
+        if args.command == "auth" and args.auth_command == "import":
+            return await cmd_import(rt, args)
+        if args.command == "auth" and args.auth_command == "refresh":
+            return await cmd_refresh(rt, args)
+    raise AssertionError(f"unhandled command {args.command}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    setup_logging(args.verbose)
+    os.umask(0o077)  # anything this process creates is private by default
+
+    if args.command == "about":
+        print(f"fantasybot {__version__}, GPL-3.0-or-later.\n{ATTRIBUTION}")
+        return 0
+    if args.command == "auth" and args.auth_command == "gen-key":
+        return cmd_gen_key(args)
+
+    try:
+        settings = Settings()
+        if args.command == "unfreeze":
+            cleared = FreezeGuard(settings.freeze_path).clear()
+            print("Write freeze lifted." if cleared else "Writes were not frozen.")
+            return 0
+        if args.command == "auth" and args.auth_command == "status":
+            store = TokenStore(settings.token_path, settings.resolved_token_key())
+            return print_status(settings, store, FreezeGuard(settings.freeze_path))
+        return asyncio.run(_run_async(args, settings))
+    except (ConfigError, TokenStoreError) as exc:
+        print(f"fantasybot: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

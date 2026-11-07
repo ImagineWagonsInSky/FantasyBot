@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+
+# Secrets and runtime state: never commit these
+.env
+.env.*
+*.enc
+state/
+secrets/
+
+# Captured API responses contain real league data until reviewed
+fixtures-capture/

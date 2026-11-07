@@ -1,0 +1,11 @@
+Project: FantasyBot
+Licensed under GPL-3.0-or-later (see LICENSE), including the additional
+attribution term (GPLv3 section 7) inherited from LaLigaApp.
+
+This product includes ‘LaLigaApp’ (c) 2025–present Externoak
+https://github.com/Externoak/LaLigaApp/
+
+FantasyBot ports LaLigaApp's B2C refresh-token flow (src/services/authService.js,
+src/stores/authStore.js), its API endpoint map (src/services/api.js) and its
+response adapters (src/services/responseAdapters.js) to Python.
+This attribution does not imply endorsement by the original authors.
