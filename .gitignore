@@ -16,3 +16,7 @@ secrets/
 
 # Captured API responses contain real league data until reviewed
 fixtures-capture/
+
+# Docker setup: your local settings
+fantasybot.env
+.ruff_cache/

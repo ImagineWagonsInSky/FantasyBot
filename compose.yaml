@@ -1,0 +1,54 @@
+# FantasyBot in Docker. Use it through ./fb rather than calling compose directly.
+#
+# Two named volumes hold everything that persists:
+#   state    the encrypted LaLiga session and the write-freeze marker
+#   secrets  the key that decrypts it, and the Telegram bot token
+# They are kept apart so one can be backed up or inspected without the other.
+# Named volumes live inside Docker, not in your home folder, so Time Machine,
+# iCloud or Dropbox never pick them up.
+
+name: fantasybot
+
+x-hardening: &hardening
+  build: .
+  image: fantasybot:local
+  user: "10001:10001"
+  read_only: true             # nothing in the image can be modified
+  cap_drop: [ALL]             # no Linux capabilities at all
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  pids_limit: 64
+  mem_limit: 256m
+  cpus: 1.0
+  restart: "no"
+  env_file:
+    - path: ./fantasybot.env  # your settings (chat ID, league, dry run); optional
+      required: false
+  environment:                # fixed paths; these win over fantasybot.env
+    FANTASYBOT_STATE_DIR: /state
+    FANTASYBOT_TOKEN_KEY_FILE: /secrets/token_key
+    FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE: /secrets/telegram_bot_token
+
+services:
+  # Everyday runs: health check, auth import/status, telegram test.
+  # Secrets are mounted read-only.
+  fantasybot:
+    <<: *hardening
+    volumes:
+      - state:/state
+      - secrets:/secrets:ro
+
+  # Only for writing secrets: `./fb init` (creates the key) and
+  # `./fb telegram set-token`.
+  setup:
+    <<: *hardening
+    profiles: [setup]
+    volumes:
+      - state:/state
+      - secrets:/secrets
+
+volumes:
+  state:
+  secrets:

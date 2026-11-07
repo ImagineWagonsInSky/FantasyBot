@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from .auth import (
     TokenStoreError,
     parse_token_paste,
 )
+from .auth.store import write_private_file
 from .config import NATIVE_CLIENT_ID, WEB_CLIENT_ID, ConfigError, Settings
 from .fixtures import FixtureRecorder
 from .healthcheck import HealthCheck, run_and_alert
@@ -186,6 +188,9 @@ def cmd_gen_key(args: argparse.Namespace) -> int:
         print(key.decode())
         return 0
     path = Path(args.out).expanduser()
+    if path.exists() and args.if_missing:
+        print(f"{path} already exists; keeping it.")
+        return 0
     if path.exists():
         print(f"{path} already exists; refusing to overwrite it (the stored token would "
               "become unreadable). Delete it yourself if you really mean to.", file=sys.stderr)
@@ -250,6 +255,25 @@ async def cmd_healthcheck(rt: Runtime, args: argparse.Namespace) -> int:
     return 0 if report.healthy else 1
 
 
+TELEGRAM_TOKEN_SHAPE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
+
+
+def cmd_telegram_set_token(settings: Settings) -> int:
+    path = settings.telegram_bot_token_file
+    if path is None:
+        print("Set FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE to where the token should be stored.",
+              file=sys.stderr)
+        return 2
+    token = read_paste("Paste the bot token from @BotFather. It will not be shown on screen.").strip()
+    if not TELEGRAM_TOKEN_SHAPE.match(token):
+        print("That doesn't look like a bot token (expected 123456789:ABC…); nothing was stored.",
+              file=sys.stderr)
+        return 1
+    write_private_file(path, (token + "\n").encode())
+    print(f"Stored the bot token in {path} (mode 600).")
+    return 0
+
+
 async def cmd_telegram(rt: Runtime, args: argparse.Namespace) -> int:
     if args.telegram_command == "chats":
         token = rt.settings.resolved_telegram_token()
@@ -291,6 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     gen = auth_sub.add_parser("gen-key", help="create a new token encryption key")
     gen.add_argument("--out", help="write the key to this file (mode 600) instead of stdout")
+    gen.add_argument("--if-missing", action="store_true", help="do nothing if --out already exists")
     imp = auth_sub.add_parser("import", help="store a token pasted on stdin and lift any freeze")
     imp.add_argument("--client-id", help="B2C client that issued the token (default: try the known ones)")
     imp.add_argument("--no-verify", action="store_true",
@@ -307,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     tg_sub = tg.add_subparsers(dest="telegram_command", required=True)
     tg_sub.add_parser("chats", help="list chats that messaged the bot, to find your chat ID")
     tg_sub.add_parser("test", help="send a test alert")
+    tg_sub.add_parser("set-token", help="store the bot token pasted on stdin (not shown on screen)")
 
     sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
     sub.add_parser("about", help="version, license and credits")
@@ -343,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
             cleared = FreezeGuard(settings.freeze_path).clear()
             print("Write freeze lifted." if cleared else "Writes were not frozen.")
             return 0
+        if args.command == "telegram" and args.telegram_command == "set-token":
+            return cmd_telegram_set_token(settings)
         if args.command == "auth" and args.auth_command == "status":
             store = TokenStore(settings.token_path, settings.resolved_token_key())
             return print_status(settings, store, FreezeGuard(settings.freeze_path))

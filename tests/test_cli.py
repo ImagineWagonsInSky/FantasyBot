@@ -110,3 +110,47 @@ def test_empty_telegram_token_file_disables_alerts_instead_of_failing(tmp_path, 
     assert main(["healthcheck"]) == 1
     out = capsys.readouterr().out
     assert "FAIL  auth_refresh" in out and "auth import" in out
+
+
+def test_gen_key_if_missing_keeps_the_existing_key(tmp_path):
+    out = tmp_path / "token_key"
+    assert main(["auth", "gen-key", "--out", str(out), "--if-missing"]) == 0
+    key = out.read_bytes()
+    assert main(["auth", "gen-key", "--out", str(out), "--if-missing"]) == 0
+    assert out.read_bytes() == key
+
+
+def test_telegram_set_token_stores_a_private_file(tmp_path, monkeypatch, capsys):
+    import io
+
+    target = tmp_path / "secrets" / "telegram_bot_token"
+    monkeypatch.setenv("FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE", str(target))
+    bot_token = "123456789:AAH-abcdefghijklmnopqrstuvwxyz012345"
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not a token\n"))
+    assert main(["telegram", "set-token"]) == 1
+    assert not target.exists()
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(bot_token + "\n"))
+    assert main(["telegram", "set-token"]) == 0
+    assert target.read_text().strip() == bot_token
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert bot_token not in capsys.readouterr().out
+
+
+def test_empty_env_values_count_as_unset(monkeypatch):
+    from fantasybot.config import Settings
+
+    monkeypatch.setenv("FANTASYBOT_COMPETITION_ID", "")
+    monkeypatch.setenv("FANTASYBOT_LEAGUE_ID", "")
+    settings = Settings()
+    assert settings.competition_id == 1 and settings.league_id is None
+
+
+def test_python_dash_m_runs_the_cli():
+    import subprocess
+    import sys
+
+    result = subprocess.run([sys.executable, "-m", "fantasybot", "about"],
+                            capture_output=True, text=True, check=True)
+    assert "LaLigaApp" in result.stdout

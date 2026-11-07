@@ -58,7 +58,8 @@ def _read_secret_file(path: Path, what: str) -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FANTASYBOT_", extra="ignore")
+    # env_ignore_empty: "FANTASYBOT_LEAGUE_ID=" in an env file means "not set".
+    model_config = SettingsConfigDict(env_prefix="FANTASYBOT_", extra="ignore", env_ignore_empty=True)
 
     # Which game and league to talk to.
     competition_id: int = 1  # 1 = LaLiga EA Sports

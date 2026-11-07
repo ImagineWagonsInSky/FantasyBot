@@ -25,7 +25,13 @@ import httpx
 
 from ..alerts import Alerter
 from ..config import KNOWN_CLIENT_IDS, Settings
-from .b2c import RefreshError, TokenResponse, id_token_expiry, jwt_expiry, refresh_tokens
+from .b2c import (
+    RefreshError,
+    TokenResponse,
+    id_token_expiry,
+    jwt_expiry,
+    refresh_tokens,
+)
 from .freeze import FreezeGuard
 from .store import TokenBundle, TokenStore, TokenStoreError
 

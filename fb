@@ -1,0 +1,262 @@
+#!/bin/sh
+# FantasyBot in Docker. This is the one command you use; see ./fb help.
+set -eu
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+LABEL=com.fantasybot.healthcheck
+UNIT=fantasybot-healthcheck
+# launchd and systemd start jobs with a minimal PATH; add where Docker lives.
+PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+export PATH
+
+case "$(uname -s)" in
+  Darwin) OS=mac; LOG="$HOME/Library/Logs/fantasybot.log" ;;
+  *)      OS=linux; LOG="${XDG_STATE_HOME:-$HOME/.local/state}/fantasybot-docker.log" ;;
+esac
+
+compose() { docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" "$@"; }
+
+# Interactive use gets a terminal (needed for the hidden paste); pipes and
+# scheduled runs don't have one.
+run_in() {
+  service=$1; shift
+  if [ -t 0 ] && [ -t 1 ]; then compose run --rm --quiet-pull "$service" "$@"
+  else compose run --rm --quiet-pull -T "$service" "$@"; fi
+}
+
+need_docker() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker isn't running. Start Docker Desktop (or the docker service) and try again." >&2
+    exit 1
+  fi
+}
+
+notify() {
+  if [ "$OS" = mac ]; then
+    osascript -e "display notification \"$1\" with title \"FantasyBot\"" >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send FantasyBot "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./fb <command>
+
+First-time setup
+  init                     build the image and create the encryption key
+  telegram set-token       store the Telegram bot token (paste, not shown)
+  telegram chats           list chats that messaged your bot (to find your chat ID)
+  telegram test            send a test alert
+  auth import              paste your LaLiga token (not shown on screen)
+  schedule install [HH:MM] run the health check every day (default 09:20)
+
+Everyday
+  healthcheck              check every read endpoint (add --no-alert to skip Telegram)
+  auth status              session expiry and write-freeze state
+  schedule status          is the daily run set up, and what did it last say
+  fixtures                 save anonymised API responses to ./fixtures-capture
+  rebuild                  rebuild the image after `git pull`
+  schedule remove          stop the daily run
+
+Anything else is passed to fantasybot inside the container, e.g.
+  ./fb auth refresh        ./fb unfreeze        ./fb about
+EOF
+}
+
+cmd_init() {
+  need_docker
+  if [ ! -f "$ROOT/fantasybot.env" ]; then
+    cp "$ROOT/fantasybot.env.example" "$ROOT/fantasybot.env"
+    chmod 600 "$ROOT/fantasybot.env"
+    echo "Created fantasybot.env (your settings; git-ignored)."
+  fi
+  compose build
+  run_in setup auth gen-key --out /secrets/token_key --if-missing
+  cat <<'EOF'
+
+Next:
+  ./fb telegram set-token     then message your bot, then ./fb telegram chats
+  (put the chat ID in fantasybot.env), then ./fb telegram test
+  ./fb auth import            paste the token JSON from miliga.laliga.com
+  ./fb healthcheck --no-alert
+  ./fb schedule install
+EOF
+}
+
+cmd_fixtures() {
+  need_docker
+  out="$ROOT/fixtures-capture"
+  mkdir -p "$out" && chmod 700 "$out"
+  # Write inside the container's private /tmp, then stream the files out with
+  # tar: no host folder is ever mounted into the container.
+  compose run --rm --quiet-pull -T --entrypoint sh fantasybot -c \
+    'python -m fantasybot healthcheck --no-alert --save-fixtures /tmp/fixtures >&2; tar -C /tmp/fixtures -cf - .' \
+    | tar -xf - -C "$out"
+  echo "Copied to $out (git-ignored)."
+}
+
+cmd_run_daily() {
+  mkdir -p "$(dirname "$LOG")"
+  {
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') daily health check"
+    if ! docker info >/dev/null 2>&1 && [ "$OS" = mac ]; then
+      echo "Docker isn't running; starting Docker Desktop"
+      open -ga Docker 2>/dev/null || true
+      i=0
+      while [ $i -lt 36 ] && ! docker info >/dev/null 2>&1; do sleep 5; i=$((i + 1)); done
+    fi
+    if docker info >/dev/null 2>&1; then
+      run_in fantasybot healthcheck 2>&1 || echo "(health check exited $?)"
+    else
+      echo "Docker isn't running: today's check was skipped"
+      notify "Today's health check didn't run: Docker isn't running."
+    fi
+  } >>"$LOG" 2>&1
+  # Keep the log small.
+  tail -n 4000 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+}
+
+xml_escape() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+cmd_schedule() {
+  action=${1:-status}
+  at=${2:-09:20}
+  hour=${at%%:*}; minute=${at#*:}
+  hour_n=${hour#0}; minute_n=${minute#0}   # plist integers: "09" -> 9 (POSIX sh safe)
+  case "$hour:$minute" in
+    [0-9]:[0-5][0-9]|[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+    *) echo "Time must be HH:MM, e.g. 09:20" >&2; exit 2 ;;
+  esac
+  case "$OS:$action" in
+    mac:install)
+      case "$ROOT" in
+        "$HOME/Documents"*|"$HOME/Desktop"*|"$HOME/Downloads"*|*"Mobile Documents"*)
+          echo "Warning: macOS stops scheduled jobs from reading Documents, Desktop, Downloads"
+          echo "and iCloud folders, and those may sync to the cloud. Move this folder to"
+          echo "e.g. ~/FantasyBot and run ./fb schedule install again." >&2 ;;
+      esac
+      plist="$HOME/Library/LaunchAgents/$LABEL.plist"
+      mkdir -p "$HOME/Library/LaunchAgents"
+      cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>$(xml_escape "$ROOT/fb")</string>
+    <string>run-daily</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>$hour_n</integer>
+    <key>Minute</key><integer>$minute_n</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>$(xml_escape "$LOG")</string>
+</dict>
+</plist>
+EOF
+      launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$plist"
+      echo "Scheduled daily at $at. If the Mac is asleep then, it runs when it wakes."
+      echo "Turn on Docker Desktop > Settings > General > 'Start Docker Desktop when you sign in'."
+      echo "Results are logged to $LOG"
+      ;;
+    mac:remove)
+      launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+      rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
+      echo "Daily run removed." ;;
+    mac:status)
+      if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+        echo "Daily run: installed"
+      else
+        echo "Daily run: not installed (./fb schedule install)"
+      fi
+      show_last_run ;;
+    linux:install)
+      if ! systemctl --user show-environment >/dev/null 2>&1; then
+        echo "No systemd user session here. Add this line with 'crontab -e' instead:" >&2
+        # cron treats % as a newline, so escape it.
+        echo "$minute $hour * * * /bin/sh '$(printf '%s' "$ROOT" | sed 's/%/\\%/g')/fb' run-daily" >&2
+        exit 1
+      fi
+      dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      mkdir -p "$dir"
+      esc_root=$(printf '%s' "$ROOT" | sed 's/%/%%/g')
+      cat >"$dir/$UNIT.service" <<EOF
+[Unit]
+Description=FantasyBot daily health check (Docker)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh "$esc_root/fb" run-daily
+EOF
+      cat >"$dir/$UNIT.timer" <<EOF
+[Unit]
+Description=Run the FantasyBot health check daily
+
+[Timer]
+OnCalendar=*-*-* $hour:$minute:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$UNIT.timer"
+      echo "Scheduled daily at $at; a run missed while the machine was off happens at next boot."
+      echo "On a Raspberry Pi or other always-on box, also run once:  sudo loginctl enable-linger $(id -un)"
+      echo "(so it runs without you being logged in). Results are logged to $LOG"
+      ;;
+    linux:remove)
+      systemctl --user disable --now "$UNIT.timer" 2>/dev/null || true
+      dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      rm -f "$dir/$UNIT.service" "$dir/$UNIT.timer"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo "Daily run removed." ;;
+    linux:status)
+      if systemctl --user is-enabled "$UNIT.timer" >/dev/null 2>&1; then
+        systemctl --user list-timers "$UNIT.timer" --no-pager 2>/dev/null | head -2
+      else
+        echo "Daily run: not installed (./fb schedule install)"
+      fi
+      show_last_run ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+show_last_run() {
+  if [ -f "$LOG" ]; then
+    echo "--- last run ($LOG):"
+    awk '/^=== /{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$LOG" | tail -n 30
+  else
+    echo "No runs logged yet."
+  fi
+}
+
+case "${1:-help}" in
+  help|-h|--help) usage ;;
+  init) cmd_init ;;
+  rebuild) need_docker; compose build ;;
+  fixtures) cmd_fixtures ;;
+  run-daily) cmd_run_daily ;;
+  schedule) shift; cmd_schedule "$@" ;;
+  logs) tail -n 80 "$LOG" ;;
+  auth)
+    if [ "${2:-}" = gen-key ]; then
+      need_docker; shift; run_in setup auth "$@"
+    else
+      need_docker; run_in fantasybot "$@"
+    fi ;;
+  telegram)
+    if [ "${2:-}" = set-token ]; then need_docker; run_in setup "$@"
+    else need_docker; run_in fantasybot "$@"; fi ;;
+  *) need_docker; run_in fantasybot "$@" ;;
+esac
