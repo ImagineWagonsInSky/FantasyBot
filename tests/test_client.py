@@ -227,6 +227,28 @@ async def test_missing_required_field_is_a_shape_error_without_values(client, fa
     assert "Secret Name" not in str(excinfo.value)
 
 
+async def test_week_points_in_any_form_never_reject_the_player_list(client, fake):
+    # LaLigaApp reads weekPoints as Number(x) || 0: it isn't always a number.
+    forms = [5, 2.5, "7", "1,5", "", "-", {"points": 3}, [1, 2], True, None]
+    base = fake.data["players"][0]
+    fake.data["players"] = [{**base, "id": f"P{i}", "weekPoints": w} for i, w in enumerate(forms)]
+    players = await client.get_all_players()
+    assert [p.weekPoints for p in players] == [5, 2.5, 7, 1.5, None, None, 3, None, None, None]
+
+
+async def test_a_broken_field_is_one_line_with_what_arrived_but_not_the_value(client, fake):
+    base = {k: v for k, v in fake.data["players"][0].items() if k != "id"}
+    fake.data["players"] = [{**base, "nickname": "Secret Name", "marketValue": "Secret Name"}
+                            for _ in range(880)]
+    with pytest.raises(ResponseShapeError) as excinfo:
+        await client.get_all_players()
+    message = str(excinfo.value)
+    assert "0.id: Field required (in 880 items)" in message
+    assert ("0.marketValue: Input should be a valid integer, unable to parse string as an integer, "
+            "got text (11 characters) (in 880 items)") in message
+    assert "Secret" not in message and message.count(";") == 1  # two fields, not 1,760 errors
+
+
 async def test_unexpected_envelope_is_a_shape_error(client, fake):
     fake.data["market"] = {"result": "maintenance"}
     with pytest.raises(ResponseShapeError, match="expected a list"):

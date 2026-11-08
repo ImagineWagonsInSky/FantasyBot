@@ -15,12 +15,41 @@ in request bodies and the API may care about the difference.
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 Id = int | str
 Number = int | float
+
+
+def _loose_points(value: Any) -> Number | None:
+    """Points the bot only displays, in whatever form LaLiga sends them.
+
+    LaLigaApp reads these as `Number(x) || 0`: a number, numeric text ("5",
+    "1,5"), or nothing usable ("", "-", an object). Anything that isn't a
+    number becomes None rather than failing the whole response."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str):
+        text = value.strip().replace(",", ".")
+        if re.fullmatch(r"-?\d+", text):
+            return int(text)
+        if re.fullmatch(r"-?\d*\.\d+", text):
+            return float(text)
+        return None
+    if isinstance(value, dict):  # e.g. {"points": 5} or {"value": 5}
+        for key in ("points", "value", "total", "totalPoints"):
+            if key in value:
+                return _loose_points(value[key])
+    return None
+
+
+# For display-only point fields: never the reason a response is rejected.
+LoosePoints = Annotated[Number | None, BeforeValidator(_loose_points)]
 
 
 def same_id(a: Id | None, b: Id | None) -> bool:
@@ -111,7 +140,7 @@ class Player(ApiModel):
     position: str | None = None  # "Portero", "Defensa", … "Entrenador"
     marketValue: int | None = None
     points: Number | None = None
-    weekPoints: Number | None = None
+    weekPoints: LoosePoints = None
     averagePoints: Number | None = None
     lastSeasonPoints: Number | None = None
     playerStatus: str | None = None  # "ok", "doubt", "injured", "suspended"
@@ -174,7 +203,7 @@ class StandingTeam(ApiModel):
     points: Number | None = None
     teamPoints: Number | None = None
     teamValue: int | None = None
-    weekPoints: Number | None = None
+    weekPoints: LoosePoints = None
     manager: StandingManager | None = None
 
 
@@ -186,7 +215,7 @@ class StandingEntry(ApiModel):
     name: str | None = None
     points: Number | None = None
     teamValue: int | None = None
-    weekPoints: Number | None = None
+    weekPoints: LoosePoints = None
     userId: Id | None = None
     manager: str | None = None
     team: StandingTeam

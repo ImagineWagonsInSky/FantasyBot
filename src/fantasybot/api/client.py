@@ -85,17 +85,60 @@ def _seg(value: Id) -> str:
     return text
 
 
+# Union branches pydantic appends to an error's location ("weekPoints.int").
+_BRANCHES = {"int", "float", "str", "bool", "none", "list", "dict", "is-instance"}
+
+
+def _kind(value: Any) -> str:
+    """What arrived, without the value itself: response values can be personal."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true/false"
+    if isinstance(value, int | float):
+        return "a number"
+    if isinstance(value, str):
+        if re.fullmatch(r"[^\w]{0,3}", value):  # "", "-", "—": safe to show
+            return f"text {value!r}"
+        return f"text ({len(value)} characters{', digits' if value.strip().isdigit() else ''})"
+    if isinstance(value, dict):
+        keys = [k for k in value if isinstance(k, str) and re.fullmatch(r"[A-Za-z_]\w{0,30}", k)][:6]
+        return "an object" + (f" with keys {', '.join(keys)}" if keys else "")
+    if isinstance(value, list):
+        return f"a list of {len(value)}"
+    return type(value).__name__
+
+
+def describe_errors(exc: ValidationError, limit: int = 5) -> str:
+    """One line per broken field, however many items it broke in."""
+    groups: dict[tuple[str, ...], dict[str, Any]] = {}
+    for e in exc.errors(include_url=False):
+        loc = [str(p) for p in e["loc"]]
+        while loc and loc[-1] in _BRANCHES:
+            loc.pop()
+        field = tuple(p for p in loc if not p.isdigit())
+        group = groups.setdefault(field, {"loc": ".".join(loc) or "<root>", "msgs": [], "rows": set(),
+                                          "got": _kind(e.get("input"))})
+        if e["msg"] not in group["msgs"]:
+            group["msgs"].append(e["msg"])
+        group["rows"].add(loc[0] if loc and loc[0].isdigit() else "")
+    lines = []
+    for group in list(groups.values())[:limit]:
+        msgs = group["msgs"]
+        msg = "Input should be a valid number" if "Input should be a valid number" in msgs else msgs[0]
+        got = "" if msg.startswith("Field required") else f", got {group['got']}"
+        rows = f" (in {len(group['rows'])} items)" if len(group["rows"]) > 1 else ""
+        lines.append(f"{group['loc']}: {msg}{got}{rows}")
+    more = f" (+{len(groups) - limit} more fields)" if len(groups) > limit else ""
+    return "; ".join(lines) + more
+
+
 def _validate(endpoint: str, adapter: TypeAdapter[T], data: Any) -> T:
     try:
         return adapter.validate_python(data)
     except ValidationError as exc:
-        # include_input=False: error text must not carry response values (PII).
-        problems = "; ".join(
-            f"{'.'.join(map(str, e['loc'])) or '<root>'}: {e['msg']}"
-            for e in exc.errors(include_input=False, include_url=False)[:5]
-        )
-        more = f" (+{exc.error_count() - 5} more)" if exc.error_count() > 5 else ""
-        raise ResponseShapeError(endpoint, problems + more) from None
+        # The message names fields and the kind of value, never the value (PII).
+        raise ResponseShapeError(endpoint, describe_errors(exc)) from None
 
 
 def _adapter(tp: Any) -> TypeAdapter[Any]:
