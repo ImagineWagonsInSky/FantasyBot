@@ -305,6 +305,7 @@ The briefing can end with buttons for the actions it suggests:
   estimated cash, or +25%.
 - **List a player for sale:** at value, +5% or +10%. Nothing is sold until
   you accept an offer.
+- **Relist the shop window:** every player who isn't listed, in one tap.
 - **Accept or decline an offer.** Accepting can't be undone, so the first real
   one asks twice like everything else.
 - **Withdraw a listing**, when there's a reason to.
@@ -313,21 +314,28 @@ When the kickoff guard warns that a negative balance would cost you the
 jornada, it also offers sell buttons for the bench players that would cover
 it. Shielding isn't offered: the API call for it claims you watched an ad.
 
-**Should you keep everyone listed to collect offers?** Mostly no:
+**The shop window: listing everyone to collect LaLiga's offers.** LaLiga
+makes its own offer on every listed player, each market cycle, at a random
+−10% to +10% of his value (per 2026/27 guides). Listing doesn't sell anyone:
+nothing happens until you accept. So keeping the squad listed and taking only
+the high draws is free money on players you'd sell anyway.
 
-- **You don't need to list a player to get offers.** Rivals can already make
-  direct offers on any of your players, and the briefing shows those too.
-- **What listing adds** is a place in the market list and, according to
-  guides, LaLiga's own offer near market value. That's a fair-price exit, not
-  a profit.
-- **It shows your hand.** Friends see who you're willing to give up, and when
-  you're short of cash.
-- **Listings expire,** so "always listed" means relisting every day.
+- **A daily button lists everyone who isn't listed** (`FANTASYBOT_SHOP_WINDOW`:
+  `everyone`, `bench` or `off`), in one confirmed tap.
+- **Every offer is recorded against the player's value at the time,** so the
+  briefing shows LaLiga's actual range in your league.
+- **Accept buttons only appear for offers worth taking:** +5% or more for bench
+  players (`FANTASYBOT_SELL_THRESHOLD`), +8% for starters
+  (`FANTASYBOT_STARTER_SELL_THRESHOLD`), any premium for a player whose value is
+  falling.
+- **Decline buttons only appear for a manager's offer below value;** LaLiga's
+  own offers simply expire.
+- **Never use "immediate sale" in the app:** LaLiga's help centre says it pays
+  50% of value. The bot doesn't use it.
 
-What does make sense is a shop window: list bench players you'd genuinely let
-go at +5–10% over value. If someone overpays, you gain; if not, you've lost
-nothing. Check in the app whether listing has any limits or side effects;
-the bot can't see that.
+The guides found no limit on how many players can be listed. The real limits
+are your balance, the 20% debt limit and a 24-player squad, and the briefing
+shows your squad size against that cap.
 
 It's off unless you switch it on, and even then **nothing reaches LaLiga
 until you turn off dry run**:
@@ -345,7 +353,8 @@ until you turn off dry run**:
 5. **Hard limits apply.** Each real action is capped at
    `FANTASYBOT_ACTION_MAX_MONEY` (20M by default), real actions at
    `FANTASYBOT_ACTION_DAILY_LIMIT` per day (5), and nothing happens while
-   writes are frozen.
+   writes are frozen. Listing, relisting, withdrawing and declining spend
+   nothing and can be undone, so they don't count towards the daily limit.
 6. **Only your private chat with the bot is obeyed;** everything else is
    ignored without a reply. Every confirmed action is in `./fb actions log`.
 
@@ -437,7 +446,10 @@ as unset.
 | `FANTASYBOT_REQUEST_DELAY` | `0.5` | seconds between API calls in the health check and briefing |
 | `FANTASYBOT_TIMEZONE` | `Europe/Madrid` | timezone for times in the briefing and alerts |
 | `FANTASYBOT_ACTIONS` | `off` | `on` offers action buttons on Telegram (needs `./fb listen start`) |
-| `FANTASYBOT_ACTION_KINDS` | `lineup,bid,steal,raise,sell,accept,decline,withdraw` | which actions to offer |
+| `FANTASYBOT_ACTION_KINDS` | `lineup,bid,steal,raise,sell,relist,accept,decline,withdraw` | which actions to offer |
+| `FANTASYBOT_SHOP_WINDOW` | `everyone` | who the daily relist lists: `everyone`, `bench` or `off` |
+| `FANTASYBOT_SELL_THRESHOLD` | `0.05` | offers this far above value get an Accept button (bench) |
+| `FANTASYBOT_STARTER_SELL_THRESHOLD` | `0.08` | the same for players in your best XI |
 | `FANTASYBOT_EARN_PER_POINT` | `100000` | money per point after each jornada (rivals' cash) |
 | `FANTASYBOT_ACTION_MAX_MONEY` | `20000000` | the most one real action may spend |
 | `FANTASYBOT_ACTION_DAILY_LIMIT` | `5` | real actions allowed per day |

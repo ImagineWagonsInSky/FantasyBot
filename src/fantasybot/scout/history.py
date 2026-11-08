@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS activity (
     created TEXT,
     body    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS offers (
+    offer_id   TEXT PRIMARY KEY,
+    first_seen TEXT NOT NULL,
+    player_id  TEXT,
+    money      INTEGER NOT NULL,
+    value      INTEGER NOT NULL,
+    from_market INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS cash_offsets (
     day    TEXT PRIMARY KEY,
     offset INTEGER NOT NULL
@@ -161,6 +169,24 @@ class PriceHistory:
         self._db.execute("INSERT OR REPLACE INTO cash_offsets VALUES (?, ?)", (day.isoformat(), offset))
         self._db.commit()
         return prev[0] if prev else None
+
+    # -- offers (to learn LaLiga's offer range) ---------------------------------
+
+    def store_offer(self, day: date, offer_id: object, player_id: object, money: int, value: int,
+                    from_market: bool) -> None:
+        """First sighting only: the value at that moment is what the offer is judged against."""
+        self._db.execute("INSERT OR IGNORE INTO offers VALUES (?, ?, ?, ?, ?, ?)",
+                         (str(offer_id), day.isoformat(), str(player_id), money, value, int(from_market)))
+        self._db.commit()
+
+    def market_offer_range(self) -> tuple[int, float, float, float] | None:
+        """(count, lowest, average, highest) premium of LaLiga's own offers seen so far."""
+        rows = self._db.execute(
+            "SELECT money, value FROM offers WHERE from_market = 1 AND value > 0").fetchall()
+        if not rows:
+            return None
+        premiums = [m / v - 1 for m, v in rows]
+        return len(premiums), min(premiums), sum(premiums) / len(premiums), max(premiums)
 
 
 def _club(club_id: object, club: object) -> str | None:

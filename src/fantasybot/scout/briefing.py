@@ -41,7 +41,17 @@ from .cash import DRIFT_LIMIT, CashEstimates, estimate
 from .difficulty import HORIZON, FixtureModel, club_records
 from .history import PriceHistory
 from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
-from .selling import bidder_name, offer_ids_to_check, on_sale, sell_candidates, should_withdraw
+from .selling import (
+    SQUAD_LIMIT,
+    OfferVerdict,
+    bidder_name,
+    judge,
+    offer_ids_to_check,
+    on_sale,
+    sell_candidates,
+    shop_window,
+    should_withdraw,
+)
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -78,6 +88,7 @@ class LeagueView:
     fixtures: FixtureModel | None = None
     cash: CashEstimates | None = None
     offers: dict[str, list[Offer]] = field(default_factory=dict)  # by your playerTeamId
+    settings: Settings | None = None
     change_3d: dict[str, int] = field(default_factory=dict)  # value change by player id
 
     def keep(self) -> list[SquadPlayer]:
@@ -152,7 +163,8 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
 
     week_info = await fetch("current week", client.get_current_week, None)
     week = week_info.number if week_info else None
-    view = LeagueView(now, league_id, standing, me, week, errors=errors, tz=settings.display_tz())
+    view = LeagueView(now, league_id, standing, me, week, errors=errors, tz=settings.display_tz(),
+                      settings=settings)
 
     teams = {view.my_team_id: me}
     if rivals:
@@ -227,7 +239,7 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
             view.squads[team_id] = build_squad(data, view.details, week, view.outlook_fn())
 
     if market:
-        for ptid in offer_ids_to_check(view.market, view.my_squad, me.team.id)[:10]:
+        for ptid in offer_ids_to_check(view.market, view.my_squad, me.team.id)[:SQUAD_LIMIT]:
             view.offers[str(ptid)] = await fetch(
                 "offers", lambda p=ptid: client.get_player_offer(league_id, p), [])
     return view
@@ -430,23 +442,52 @@ def _vs_value(amount: int | None, value: int) -> str:
     return f" ({(amount / value - 1) * 100:+.0f}% vs value)"
 
 
-def _selling(view: LeagueView) -> str:
+def verdicts(view: LeagueView) -> list[OfferVerdict]:
+    """Best offer per player on sale, judged against your thresholds; best premium first."""
+    settings = view.settings or Settings()
+    keep = view.keep()
+    found = [judge(s, keep, view.change_3d, settings.sell_threshold, settings.starter_sell_threshold)
+             for s in on_sale(view.market, view.my_squad, view.offers, view.me.team.id)]
+    return sorted((v for v in found if v is not None), key=lambda v: -v.premium)
+
+
+def _selling(view: LeagueView, history: PriceHistory | None = None) -> str:
     squad = view.my_squad
     if not squad:
         return "💸 Selling: your squad couldn't be loaded."
+    settings = view.settings or Settings()
     keep = view.keep()
     sales = on_sale(view.market, squad, view.offers, view.me.team.id)
-    lines = ["💸 Selling"]
-    for s in sales[:5]:
+    judged = {str(v.sale.player_team_id): v for v in verdicts(view)}
+    full = " (full: sell before you can buy)" if len(squad) >= SQUAD_LIMIT else ""
+    lines = [f"💸 Selling · squad {len(squad)}/{SQUAD_LIMIT}{full}"]
+    ordered = sorted(sales, key=lambda s: -(judged[str(s.player_team_id)].premium
+                                            if str(s.player_team_id) in judged else -9))
+    for s in ordered[:8]:
         status = f"listed {money(s.listed_price)}" if s.listed_price is not None else "not listed"
         closes = f" · closes {view.when(s.expires)}" if s.expires else ""
         best = s.best
         offer = (f"best offer {money(best.money)} from {bidder_name(best, view.standing)}"
                  f"{_vs_value(best.money, s.value)}") if best else "no offers yet"
-        lines.append(f" • {s.name} · {status} (value {money(s.value)}){closes} · {offer}")
-        why = should_withdraw(s, keep)
+        v = judged.get(str(s.player_team_id))
+        mark = ""
+        if v is not None and v.worth:
+            mark = " · ⭐ worth taking" + (f" ({v.note})" if v.note else "")
+        lines.append(f" • {s.name} · {status} (value {money(s.value)}){closes} · {offer}{mark}")
+        why = should_withdraw(s, keep, settings.shop_window == "everyone")
         if why:
             lines.append(f"   ↩ think about withdrawing: {why}")
+    if len(sales) > 8:
+        lines.append(f"   … and {len(sales) - 8} more listed")
+    stats = history.market_offer_range() if history else None
+    if stats and stats[0] >= 5:
+        count, low, avg, high = stats
+        lines.append(f" LaLiga's offers so far: {low:+.0%} to {high:+.0%} of value "
+                     f"(average {avg:+.1%}, {count} seen)")
+    window = shop_window(squad, keep, sales, settings.shop_window)
+    if window:
+        lines.append(f" 🪟 {len(window)} player(s) not listed today: list them so LaLiga makes an offer "
+                     f"on each (accepting is always your call).")
     candidates = sell_candidates(squad, keep, view.balance, view.change_3d, sales)
     if candidates:
         lines.append(" Worth selling (not in your best XI):")
@@ -507,7 +548,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
         _market(view, team_value, d1, d3),
         _clauses(view),
         _exposure(view),
-        _selling(view),
+        _selling(view, history),
         _movers(view, history, days),
         _rival_moves(view),
     ]
@@ -539,8 +580,14 @@ async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, 
     now = now or datetime.now(timezone.utc)
     view = await gather(client, settings, now, sleep=sleep)
     with PriceHistory(settings.state_dir / "history.sqlite") as history:
+        today = now.astimezone(view.tz).date()
         if view.players:
-            history.record(now.astimezone(view.tz).date(), view.players)
+            history.record(today, view.players)
+        for sale in on_sale(view.market, view.my_squad, view.offers, view.me.team.id):
+            for offer in sale.offers:
+                if offer.money and sale.value:
+                    history.store_offer(today, offer.id, sale.player.player.id if sale.player else None,
+                                        offer.money, sale.value, offer.bidderTeam is None)
         messages = compose(view, history)
     if send:
         for message in messages:

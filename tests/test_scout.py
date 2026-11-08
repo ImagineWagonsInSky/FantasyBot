@@ -416,13 +416,37 @@ async def test_selling_section(league, scout_client, settings, alerter, seeded_s
                                         sleep=no_sleep))
     selling = text.split("💸 Selling")[1].split("📈")[0]
     lines = [line.strip() for line in selling.strip().splitlines()]
-    # Best offers first: Carl's direct offer for unlisted Mid A, then your listing.
-    assert lines[0] == "• Mid A · not listed (value 10.00M) · best offer 12.00M from Carl (+20% vs value)"
-    assert lines[1].startswith("• Fwd B · listed 6.50M (value 6.00M) · closes Sun 15 Nov 10:00")
-    assert lines[1].endswith("best offer 6.60M from Ana (+10% vs value)")  # beats the market's 6.1M
-    assert "↩ think about withdrawing: he's in your best XI" in lines[2]
+    assert lines[0] == "· squad 15/24"
+    # Best premium first: Carl's direct offer for unlisted Mid A, then your listing.
+    assert lines[1] == ("• Mid A · not listed (value 10.00M) · best offer 12.00M from Carl "
+                        "(+20% vs value) · ⭐ worth taking (in your best XI)")
+    assert lines[2].startswith("• Fwd B · listed 6.50M (value 6.00M) · closes Sun 15 Nov 10:00")
+    assert "best offer 6.60M from Ana (+10% vs value) · ⭐ worth taking" in lines[2]  # beats the 6.1M
     assert "• Hurt (DEF) · value 8.00M · injured" in selling
     assert "• Backup (GK) · value 1.00M · hardly scores" in selling
+    assert "🪟 14 player(s) not listed today" in selling  # everyone except listed Fwd B
+
+
+async def test_bench_shop_window_and_withdraw_hints(league, scout_client, settings, alerter,
+                                                    seeded_store):
+    settings.shop_window = "bench"
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    assert "↩ think about withdrawing: he's in your best XI" in text
+    assert "🪟 3 player(s) not listed today" in text  # Backup, Hurt, Mid D
+
+
+async def test_market_offers_are_recorded_and_summarised(league, scout_client, settings, alerter,
+                                                         seeded_store):
+    from fantasybot.scout.history import PriceHistory
+
+    with PriceHistory(settings.state_dir / "history.sqlite") as h:
+        for i, prem in enumerate((-0.09, -0.02, 0.03, 0.06, 0.10)):
+            h.store_offer(NOW.date(), f"old{i}", "P1", int(1_000_000 * (1 + prem)), 1_000_000, True)
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    # Today's market offer for Fwd B (6.1M on 6.0M) is recorded too: 6 seen.
+    assert "LaLiga's offers so far: -9% to +10% of value (average +1.6%, 6 seen)" in text
 
 
 async def test_negative_balance_puts_covering_sales_first(league, scout_client, settings, alerter,

@@ -334,45 +334,70 @@ def test_listen_refuses_when_actions_are_off(tmp_path, monkeypatch, capsys):
 async def test_selling_buttons(act):
     await act.offer()
     offered = labels(act.tg)
-    assert "✅ Sell Mid A to Carl · 12.00M" in offered
-    assert "✖ Decline Carl's 12.00M for Mid A" in offered
-    assert "✅ Sell Fwd B to Ana · 6.60M" in offered
-    assert "↩ Withdraw Fwd B (he's in your best XI)" in offered
+    assert "✅ Sell Mid A · 12.00M (+20%)" in offered  # Carl's direct offer, starter: needs +8%
+    assert "✅ Sell Fwd B · 6.60M (+10%)" in offered  # Ana beats the market's 6.1M
+    assert "🪟 List 14 players for LaLiga's offers" in offered
     assert {"💸 List Hurt 8.00M", "8.40M", "8.80M"} <= set(offered)
+    assert not any(label.startswith(("✖ Decline", "↩ Withdraw")) for label in offered)
     assert all(len(b.encode()) <= 64 for b in act.tg.buttons().values())  # Telegram's limit
 
 
-async def test_accept_decline_sell_withdraw_requests(act):
+async def test_offers_below_the_threshold_get_no_accept_button(act):
+    act.fake.data["player_offer_by_id"]["PT41"] = [
+        {"id": "O0", "money": 6_200_000, "status": "pending"},  # market +3%: not enough for a starter
+        {"id": "O1", "money": 5_500_000, "status": "pending", "bidderTeam": {"id": "T2"}}]  # Ana lowballs
     await act.offer()
-    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    offered = labels(act.tg)
+    assert not any(label.startswith("✅ Sell Fwd B") for label in offered)
+    act.settings.starter_sell_threshold = 0.02
+    await act.offer()
+    assert "✅ Sell Fwd B · 6.20M (+3%)" in labels(act.tg)
+
+
+async def test_accept_decline_sell_withdraw_relist_requests(act):
+    act.fake.data["player_offer_by_id"]["PT30"].append(
+        {"id": "O3", "money": 9_000_000, "status": "pending", "bidderTeam": {"id": "T3"}})
+    await act.offer()
+    await act.tap("✅ Sell Mid A · 12.00M (+20%)")
     assert "Sell Mid A to Carl for 12.00M (value 10.00M). He leaves your squad." in act.tg.text
     assert "Cash 4.00M → 16.00M." in act.tg.text
     await act.tap(act.tg.buttons()["✅ Confirm"])
     assert f"POST {C1.removeprefix('/api')}/league/L1/market/MK30/offer/O2/accept\n" \
            '{"offerMoney": 12000000}' in act.tg.text
 
-    await act.tap("✖ Decline Ana's 6.60M for Fwd B", index=0)
-    await act.tap(act.tg.buttons()["✅ Confirm"])
-    assert act.tg.text.endswith("POST /v1/competition/1/league/L1/market/M4/offer/O1/reject\n(no body)")
-
     await act.tap("💸 List Hurt 8.00M", index=0)
     assert "List Hurt for 8.00M (value 8.00M)" in act.tg.text and "nothing is sold until" in act.tg.text
     await act.tap(act.tg.buttons()["✅ Confirm"])
     assert '/market/sell\n{"playerId": "PT20", "salePrice": 8000000}' in act.tg.text
 
+    await act.tap("🪟 List 14 players for LaLiga's offers", index=0)
+    assert act.tg.text.startswith("List 14 players at their value: Keeper 5.00M, Backup 1.00M")
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.startswith("🧪 Test only, nothing was sent. FantasyBot would have sent 14 requests")
+    assert "… and 2 more" in act.tg.text
+    assert act.fake.writes == []
+
+
+async def test_decline_and_withdraw_with_a_bench_shop_window(act):
+    act.settings.shop_window = "bench"
+    act.fake.data["player_offer_by_id"]["PT41"] = [
+        {"id": "O1", "money": 5_500_000, "status": "pending", "bidderTeam": {"id": "T2"}}]
+    await act.offer()
+    await act.tap("✖ Decline Ana's 5.50M for Fwd B")
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.endswith("POST /v1/competition/1/league/L1/market/M4/offer/O1/reject\n(no body)")
     await act.tap("↩ Withdraw Fwd B (he's in your best XI)", index=0)
     await act.tap(act.tg.buttons()["✅ Confirm"])
     assert act.tg.text.endswith("DELETE /v1/competition/1/league/L1/market/M4/delete\n(no body)")
-    assert act.fake.writes == []
 
 
 async def test_offer_changes_and_relisting_are_refused(act):
     await act.offer()
     act.fake.data["player_offer_by_id"]["PT30"][0]["money"] = 11_000_000
-    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    await act.tap("✅ Sell Mid A · 12.00M (+20%)")
     assert act.tg.text == "✋ Carl's offer changed to 11.00M; the next briefing will show it."
     act.fake.data["player_offer_by_id"]["PT30"] = []
-    await act.tap("✅ Sell Mid A to Carl · 12.00M", index=0)
+    await act.tap("✅ Sell Mid A · 12.00M (+20%)", index=0)
     assert act.tg.text == "✋ Carl's offer for Mid A isn't open any more."
     # Fwd B is already listed: listing him again is refused.
     from fantasybot.actions.core import sell_suggestion
@@ -391,13 +416,29 @@ async def test_offer_changes_and_relisting_are_refused(act):
 async def test_first_real_sale_asks_twice(act):
     act.settings.dry_run = False
     await act.offer()
-    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    await act.tap("✅ Sell Mid A · 12.00M (+20%)")
     await act.tap(act.tg.buttons()["✅ Confirm"])
     assert act.tg.text.startswith("This would be your first real sale (accepting an offer) through")
     await act.tap(act.tg.buttons()["Yes, do it"])
     (sent,) = act.fake.writes
     assert sent.url.path == f"{C1}/league/L1/market/MK30/offer/O2/accept"
     assert json.loads(sent.content) == {"offerMoney": 12_000_000}
+
+
+async def test_live_relist_sends_each_listing_and_skips_the_daily_limit(act):
+    act.settings.dry_run = False
+    act.settings.action_daily_limit = 1
+    act.store.mark_done_before("relist", NOW)
+    act.store.mark_done_before("steal", NOW)
+    await act.offer()
+    await act.tap("🪟 List 14 players for LaLiga's offers")
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text == "✅ Listed 14 of 14."
+    assert len(act.fake.writes) == 14 and all(w.url.path.endswith("/market/sell") for w in act.fake.writes)
+    # Listing is reversible and spends nothing: the one real action today is still free.
+    await act.tap("🎯 Steal Star · 3.00M", index=0)
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.startswith("✅ Done")
 
 
 async def test_kickoff_guard_offers_sell_buttons_for_a_negative_balance(act):

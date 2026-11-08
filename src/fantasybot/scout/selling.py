@@ -15,6 +15,7 @@ from ..api.models import Id, MarketItem, Offer, StandingEntry, same_id
 from .analysis import SquadPlayer, manager_name, parse_time, sell_to_cover
 
 IDLE_OUTLOOK = 1.0  # bench players expected to score less than this per jornada
+SQUAD_LIMIT = 24  # players per squad (guides for 2026/27)
 
 
 @dataclass
@@ -123,12 +124,63 @@ def sell_candidates(squad: list[SquadPlayer], keep: list[SquadPlayer], balance: 
     return out[:limit]
 
 
-def should_withdraw(s: OnSale, keep: list[SquadPlayer]) -> str | None:
-    """A reason to take a listing back, if there is one."""
+def should_withdraw(s: OnSale, keep: list[SquadPlayer], starters_listed: bool = False) -> str | None:
+    """A reason to take a listing back, if there is one. With starters_listed (the
+    "everyone" shop window) being in the best XI isn't one: listing him is the point."""
     if s.listed_price is None or s.player is None:
         return None
     if s.player.value > s.listed_price:
         return f"listed at {s.listed_price / 1e6:.2f}M but now worth {s.player.value / 1e6:.2f}M"
-    if any(str(k.player.id) == str(s.player.player.id) for k in keep):
+    if not starters_listed and any(str(k.player.id) == str(s.player.player.id) for k in keep):
         return "he's in your best XI"
     return None
+
+
+def premium(amount: int | None, value: int) -> float | None:
+    if not amount or not value:
+        return None
+    return amount / value - 1
+
+
+@dataclass
+class OfferVerdict:
+    sale: OnSale
+    offer: Offer
+    premium: float
+    worth: bool  # clears the threshold for this kind of player
+    note: str  # "in your best XI", "falling in value", or ""
+
+
+def judge(sale: OnSale, keep: list[SquadPlayer], change_3d: dict[str, int], bench_threshold: float,
+          starter_threshold: float) -> OfferVerdict | None:
+    """Is the best offer for this player worth taking?
+
+    LaLiga's own offers are random within about ±10% of value, redrawn each
+    market cycle, so waiting for a high one pays. Starters need a bigger
+    premium; a player whose value is falling is worth selling at value."""
+    best = sale.best
+    if best is None or sale.player is None or not sale.value:
+        return None
+    prem = premium(best.money, sale.value) or 0.0
+    starter = any(str(k.player.id) == str(sale.player.player.id) for k in keep)
+    falling = change_3d.get(str(sale.player.player.id), 0) < 0
+    if starter:
+        threshold, note = starter_threshold, "in your best XI"
+    elif falling:
+        threshold, note = 0.0, "falling in value"
+    else:
+        threshold, note = bench_threshold, ""
+    return OfferVerdict(sale, best, prem, prem >= threshold, note)
+
+
+def shop_window(squad: list[SquadPlayer], keep: list[SquadPlayer], sales: Iterable[OnSale],
+                mode: str) -> list[SquadPlayer]:
+    """Players to (re)list today so LaLiga makes an offer on each: "everyone",
+    "bench" (outside the best XI) or "off". Already-listed players are skipped."""
+    if mode == "off":
+        return []
+    listed = {str(s.player_team_id) for s in sales if s.listed_price is not None}
+    keep_ids = {str(k.player.id) for k in keep}
+    pool = squad if mode == "everyone" else [p for p in squad if str(p.player.id) not in keep_ids]
+    return [p for p in pool if p.player_team_id is not None and p.value > 0
+            and str(p.player_team_id) not in listed]

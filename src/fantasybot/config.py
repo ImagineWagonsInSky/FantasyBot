@@ -92,10 +92,16 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Madrid"  # how times are shown; LaLiga's own clock by default
     earn_per_point: int = 100_000  # paid per point after each jornada (rivals' cash estimates)
 
+    # Selling: who the daily relist suggests ("everyone", "bench" or "off"), and how far
+    # above value an offer must be before the bot suggests taking it.
+    shop_window: str = "everyone"
+    sell_threshold: float = 0.05  # bench players
+    starter_sell_threshold: float = 0.08  # players in your best XI
+
     # Acting from Telegram (see README, "Acting from Telegram"). Off unless switched on;
     # with dry_run still on, confirmed actions are only simulated.
     actions: bool = False
-    action_kinds: str = "lineup,bid,steal,raise,sell,accept,decline,withdraw"
+    action_kinds: str = "lineup,bid,steal,raise,sell,relist,accept,decline,withdraw"
     action_max_money: int = 20_000_000  # per action: a bid, a clause, a raise's cost
     action_daily_limit: int = 5  # real (not dry-run) actions per day
     confirm_seconds: int = 120  # how long a Confirm button stays valid

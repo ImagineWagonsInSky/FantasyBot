@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..api import ApiError, FantasyClient, ResponseShapeError
+from ..api import ApiError, FantasyClient, ResponseShapeError, WriteResult
 from ..auth import AuthUnavailable, WritesFrozen
 from ..config import Settings
 from ..scout.analysis import SquadPlayer
@@ -23,6 +23,7 @@ from ..telegram import Button, TelegramBot, TelegramError
 from .core import (
     KIND_NAMES,
     ActionRefused,
+    BatchResult,
     Plan,
     Suggestion,
     check_limits,
@@ -32,7 +33,7 @@ from .core import (
     sell_suggestion,
     suggest,
 )
-from .store import ActionStore, Confirmation
+from .store import ActionStore, Confirmation, Proposal
 
 log = logging.getLogger(__name__)
 
@@ -229,6 +230,9 @@ class ActionCenter:
             await self.say(f"❌ LaLiga refused it: {exc.message}")
             return
 
+        if isinstance(result, list):
+            await self._batch_done(proposal, result, now)
+            return
         request = {"method": result.method, "url": result.url, "body": result.body}
         if result.dry_run:
             self._store.record_execution(now, now.date(), proposal.id, proposal.kind, True, request,
@@ -241,6 +245,29 @@ class ActionCenter:
         self._store.close_proposal(proposal.id)
         extra = " Bids are blind: you'll know when the market closes." if proposal.kind == "bid" else ""
         await self.say(f"✅ Done: LaLiga answered HTTP {result.status_code}.{extra}")
+
+
+    async def _batch_done(self, proposal: Proposal, results: BatchResult, now: datetime) -> None:
+        sent = [(name, r) for name, r in results if isinstance(r, WriteResult)]
+        failed = [(name, r) for name, r in results if not isinstance(r, WriteResult)]
+        dry = bool(sent) and all(r.dry_run for _, r in sent)
+        requests = [{"method": r.method, "url": r.url, "body": r.body} for _, r in sent]
+        outcome = "simulated" if dry else ("done" if sent else "refused")
+        self._store.record_execution(now, now.date(), proposal.id, proposal.kind, dry,
+                                     {"batch": requests}, outcome)
+        if dry:
+            lines = [describe_request(r, self._settings).replace("\n", " ") for _, r in sent]
+            shown = "\n".join(lines[:12]) + (f"\n… and {len(lines) - 12} more" if len(lines) > 12 else "")
+            await self.say(f"🧪 Test only, nothing was sent. FantasyBot would have sent {len(sent)} "
+                           f"requests:\n{shown}")
+            return
+        if sent:
+            self._store.mark_done_before(proposal.kind, now)
+            self._store.close_proposal(proposal.id)
+        text = f"✅ Listed {len(sent)} of {len(results)}."
+        if failed:
+            text += "\n❌ " + "; ".join(f"{name}: {getattr(e, 'message', e)}" for name, e in failed)
+        await self.say(text)
 
 
 async def listen(center: ActionCenter, bot: TelegramBot, store: ActionStore, *, once: bool = False,

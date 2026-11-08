@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -159,10 +160,11 @@ class ActionStore:
                           json.dumps(request) if request is not None else None, outcome))
         self._db.commit()
 
-    def live_actions_on(self, day: date) -> int:
-        row = self._db.execute("SELECT COUNT(*) FROM executions WHERE day = ? AND dry_run = 0 "
-                               "AND outcome = 'done'", (day.isoformat(),)).fetchone()
-        return int(row[0])
+    def live_actions_on(self, day: date, exclude: Iterable[str] = ()) -> int:
+        rows = self._db.execute("SELECT kind FROM executions WHERE day = ? AND dry_run = 0 "
+                                "AND outcome = 'done'", (day.isoformat(),)).fetchall()
+        skip = set(exclude)
+        return sum(1 for (kind,) in rows if kind not in skip)
 
     def executions(self) -> list[dict[str, Any]]:
         rows = self._db.execute("SELECT at, kind, dry_run, request, outcome FROM executions "

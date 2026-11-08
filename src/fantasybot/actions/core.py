@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..api import FantasyClient, LineupUpdate, WriteResult
+from ..api import ApiError, FantasyClient, LineupUpdate, WriteResult
 from ..api.models import MarketItem, Offer, TeamPlayer, same_id
 from ..config import Settings
 from ..scout.analysis import (
@@ -38,14 +38,16 @@ from ..scout.analysis import (
     rank_market,
     read_lineup,
 )
-from ..scout.briefing import LeagueView, exposure_order, takers
+from ..scout.briefing import LeagueView, exposure_order, takers, verdicts
 from ..scout.model import DEF, FWD, GK, MID
-from ..scout.selling import bidder_name, on_sale, sell_candidates, should_withdraw
+from ..scout.selling import bidder_name, on_sale, sell_candidates, shop_window, should_withdraw
 from .store import ActionStore, Proposal
 
 KIND_NAMES = {"lineup": "lineup change", "bid": "bid", "steal": "clause steal", "raise": "clause raise",
-              "sell": "listing", "accept": "sale (accepting an offer)", "decline": "declined offer",
-              "withdraw": "withdrawn listing"}
+              "sell": "listing", "relist": "shop-window relist", "accept": "sale (accepting an offer)",
+              "decline": "declined offer", "withdraw": "withdrawn listing"}
+# Spend nothing and can be undone: these don't count towards the daily limit of real actions.
+REVERSIBLE = frozenset({"sell", "relist", "withdraw", "decline"})
 SELL_STEPS = (1.0, 1.05, 1.10)
 BID_STEPS = (1.0, 1.05, 1.10)
 LINEUP_MIN_GAIN = 0.5
@@ -151,22 +153,32 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
     sales = on_sale(view.market, squad, view.offers, view.me.team.id) if squad else []
     keep = view.keep()
     if {"accept", "decline"} & kinds:
-        for s in [s for s in sales if s.best is not None and s.market_id is not None][:3]:
-            best = s.best
+        judged = [v for v in verdicts(view) if v.sale.market_id is not None]
+        for v in judged:
+            s, best = v.sale, v.offer
             bidder = bidder_name(best, view.standing)
             common = {**base, "player_team_id": s.player_team_id, "name": s.name, "market_id": s.market_id,
                       "offer_id": best.id, "money": best.money, "bidder": bidder}
-            if "accept" in kinds:
+            if v.worth and "accept" in kinds:
                 out.append(Suggestion("accept", f"accept {bidder}'s offer for {s.name}", {
-                    **common, "options": [f"✅ Sell {s.name} to {bidder} · {money(best.money)}"]},
+                    **common, "options": [f"✅ Sell {s.name} · {money(best.money)} ({v.premium:+.0%})"]},
                     now + timedelta(hours=12)))
-            if "decline" in kinds:
+            elif not v.worth and v.premium < 0 and best.bidderTeam is not None and "decline" in kinds:
+                # LaLiga's own offers just expire; a manager's lowball is worth an answer.
                 out.append(Suggestion("decline", f"decline {bidder}'s offer for {s.name}", {
                     **common, "options": [f"✖ Decline {bidder}'s {money(best.money)} for {s.name}"]},
                     now + timedelta(hours=12)))
+    if "relist" in kinds:
+        window = shop_window(squad, keep, sales, settings.shop_window) if squad else []
+        if window:
+            players = [{"player_team_id": p.player_team_id, "name": p.name, "value": p.value} for p in window]
+            out.append(Suggestion("relist", f"relist {len(window)} players", {
+                **base, "players": players,
+                "options": [f"🪟 List {len(window)} players for LaLiga's offers"]},
+                now + timedelta(hours=12)))
     if "withdraw" in kinds:
         for s in sales:
-            why = should_withdraw(s, keep)
+            why = should_withdraw(s, keep, settings.shop_window == "everyone")
             if why and s.market_id is not None:
                 out.append(Suggestion("withdraw", f"withdraw {s.name}", {
                     **base, "player_team_id": s.player_team_id, "name": s.name, "market_id": s.market_id,
@@ -371,6 +383,26 @@ async def prepare(proposal: Proposal, option: int, client: FantasyClient, settin
                           f"He leaves your squad.\nCash {money(cash)} → {money(cash + amount)}.",
                     0, {"market_id": params["market_id"], "offer_id": offer.id, "money": amount}, warnings)
 
+    if kind == "relist":
+        squad = await client.get_team_data(league, team_id)
+        by_id = {str(pt.player_team_id): pt for pt in squad.players}
+        listed = {str(i.playerTeam.playerTeamId) for i in await client.get_market(league)
+                  if i.discr == "marketPlayerTeam" and same_id(i.seller_team_id, team_id)
+                  and i.playerTeam and not i.directOffer}
+        todo = []
+        for p in params["players"]:
+            owned = by_id.get(str(p["player_team_id"]))
+            if owned is None or str(p["player_team_id"]) in listed:
+                continue
+            value = owned.playerMaster.marketValue or p["value"]
+            todo.append({"player_team_id": owned.player_team_id, "name": p["name"],
+                         "price": _round_up(value, 10_000)})
+        if not todo:
+            raise ActionRefused("They're all listed already (or no longer yours).")
+        names = ", ".join(f"{t['name']} {money(t['price'])}" for t in todo)
+        return Plan(kind, f"List {len(todo)} players at their value: {names}.\nLaLiga makes an offer on "
+                          "each; nothing is sold until you accept one.", 0, {"listings": todo})
+
     if kind == "withdraw":
         listing = await _my_listing(client, league, team_id, params["player_team_id"])
         if listing is None:
@@ -386,13 +418,27 @@ def check_limits(plan: Plan, settings: Settings, store: ActionStore, today: Any)
         raise ActionRefused(f"{money(plan.money)} is over your per-action limit "
                             f"({money(settings.action_max_money)}, FANTASYBOT_ACTION_MAX_MONEY). "
                             "Do it in the app, or raise the limit.")
-    if not settings.dry_run and store.live_actions_on(today) >= settings.action_daily_limit:
+    if (not settings.dry_run and plan.kind not in REVERSIBLE
+            and store.live_actions_on(today, exclude=REVERSIBLE) >= settings.action_daily_limit):
         raise ActionRefused(f"That's today's limit of {settings.action_daily_limit} real actions "
                             "(FANTASYBOT_ACTION_DAILY_LIMIT).")
 
 
-async def execute(plan: Plan, client: FantasyClient, league_id: Any, team_id: Any) -> WriteResult:
+BatchResult = list[tuple[str, "WriteResult | ApiError"]]
+
+
+async def execute(plan: Plan, client: FantasyClient, league_id: Any,
+                  team_id: Any) -> WriteResult | BatchResult:
     call = plan.call
+    if plan.kind == "relist":
+        done: BatchResult = []
+        for listing in call["listings"]:
+            try:
+                done.append((listing["name"], await client.sell_player_to_market(
+                    league_id, listing["player_team_id"], listing["price"])))
+            except ApiError as exc:  # keep going: one refusal shouldn't stop the rest
+                done.append((listing["name"], exc))
+        return done
     if plan.kind == "steal":
         return await client.pay_buyout_clause(league_id, call["player_team_id"], call["amount"])
     if plan.kind == "bid":
