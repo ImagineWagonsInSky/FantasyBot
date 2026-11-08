@@ -145,6 +145,15 @@ class PriceHistory:
             "HAVING COUNT(*) > 0 AND SUM(local_score IS NULL OR visitor_score IS NULL) = 0").fetchall()
         return {r[0] for r in rows}
 
+    def results_by_week(self) -> dict[int, list[Match]]:
+        out: dict[int, list[Match]] = {}
+        rows = self._db.execute("SELECT week, match_id, local_id, visitor_id, local_score, visitor_score, "
+                                "match_date FROM results").fetchall()
+        for r in rows:
+            out.setdefault(r[0], []).append(Match(id=r[1], localId=r[2], visitorId=r[3], localScore=r[4],
+                                                  visitorScore=r[5], matchDate=r[6]))
+        return out
+
     def results(self) -> list[Match]:
         rows = self._db.execute("SELECT match_id, local_id, visitor_id, local_score, visitor_score, "
                                 "match_date FROM results").fetchall()

@@ -250,7 +250,8 @@ class HealthCheck:
         ext = self._external
         if ext is None:
             return
-        sources = [("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status)]
+        sources = [("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status),
+                   ("football_data", "football-data.org", ext.results_enabled, ext.football_data_status)]
         for name, label, enabled, call in sources:
             if not enabled:
                 report.results.append(CheckResult(name, "skip", "not set up (optional)"))

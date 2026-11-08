@@ -9,3 +9,7 @@ FantasyBot ports LaLigaApp's B2C refresh-token flow (src/services/authService.js
 src/stores/authStore.js), its API endpoint map (src/services/api.js) and its
 response adapters (src/services/responseAdapters.js) to Python.
 This attribution does not imply endorsement by the original authors.
+
+Outside data, each optional and fetched with your own key:
+- Football data provided by the Football-Data.org API (https://www.football-data.org).
+- Match odds from The Odds API (https://the-odds-api.com).

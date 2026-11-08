@@ -17,6 +17,7 @@ import httpx
 from ..config import Settings
 from ..redact import redact
 from ..scout.history import PriceHistory
+from .football_data import trim
 
 log = logging.getLogger(__name__)
 
@@ -84,8 +85,10 @@ class ExternalData:
                                             timeout=self._settings.http_timeout)
         except httpx.HTTPError as exc:
             raise ExternalError(source, redact(f"network error: {type(exc).__name__}", secret)) from None
-        if response.status_code in (401, 403):
-            raise ExternalError(source, f"HTTP {response.status_code}: check the key or token")
+        if response.status_code == 401:
+            raise ExternalError(source, "HTTP 401: check the key or token")
+        if response.status_code == 403:
+            raise ExternalError(source, "HTTP 403: the key, or its free plan, doesn't allow this")
         if response.status_code == 429:
             raise ExternalError(source, "HTTP 429: over the free plan's limit")
         if response.status_code != 200:
@@ -132,3 +135,41 @@ class ExternalData:
         if not sport.get("active"):
             raise ExternalError("odds", "no LaLiga matches are listed right now")
         return f"credits left this month: {self.credits_left}" if self.credits_left else "key works"
+
+    # -- football-data.org -------------------------------------------------------
+
+    def _football_data(self) -> tuple[str, str, dict[str, str]] | None:
+        token = self._settings.optional_secret("football_data_token")
+        if token is None:
+            return None
+        s = self._settings
+        base = f"{s.football_data_base.rstrip('/')}/v4/competitions/{s.football_data_competition}"
+        return token, base, {"X-Auth-Token": token}
+
+    async def real_matches(self, season: int, *, refresh: bool = True) -> dict[str, Any] | None:
+        """The season's fixtures and results, trimmed (see football_data.trim)."""
+        setup = self._football_data()
+        if setup is None:
+            return None
+        token, base, headers = setup
+
+        async def fetch() -> dict[str, Any]:
+            data = await self._get("football-data.org", f"{base}/matches", params={"season": season},
+                                   headers=headers, secret=token)
+            if not isinstance(data, dict) or not isinstance(data.get("matches"), list):
+                raise ExternalError("football-data.org", "expected a list of matches")
+            return trim(data)
+
+        return await self.cached("football-data", fetch, refresh=refresh, max_age=timedelta(hours=6))
+
+    async def football_data_status(self) -> str:
+        """For the health check: the token works and the competition is covered (1 call)."""
+        setup = self._football_data()
+        if setup is None:
+            raise ExternalError("football-data.org", "no token set up")
+        token, base, headers = setup
+        data = await self._get("football-data.org", base, headers=headers, secret=token)
+        season = (data.get("currentSeason") if isinstance(data, dict) else None) or {}
+        if not season:
+            raise ExternalError("football-data.org", "the competition has no current season")
+        return f"season from {season.get('startDate')}, matchday {season.get('currentMatchday')}"

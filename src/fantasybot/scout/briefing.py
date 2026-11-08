@@ -19,6 +19,7 @@ from ..api.models import ActivityEntry, Id, Lineup, MarketItem, Match, Offer, Pl
 from ..auth import AuthUnavailable
 from ..config import Settings
 from ..external import ExternalData, ExternalError
+from ..external.football_data import DataCheck, cross_check, parse_matches, season_of
 from ..external.odds import MatchOdds, match_odds
 from .analysis import (
     Rival,
@@ -94,6 +95,7 @@ class LeagueView:
     change_3d: dict[str, int] = field(default_factory=dict)  # value change by player id
     club_names: dict[str, str] = field(default_factory=dict)  # club id -> short name
     odds: dict[tuple[str, str], MatchOdds] = field(default_factory=dict)  # (home, away) club ids
+    data_check: DataCheck | None = None  # LaLiga Fantasy's calendar vs football-data.org
 
     def keep(self) -> list[SquadPlayer]:
         """The best XI plus coach: who not to sell."""
@@ -203,6 +205,10 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         clubs = await fetch("club names", client.get_teams_master, [])
         names = {str(c.id): c.shortName or c.name or str(c.id) for c in clubs}
         aliases = {str(c.id): (c.name, c.shortName, c.slug) for c in clubs}
+    for m in (m for w in view.matches.values() for m in w):  # matches carry club names too
+        for ref in (m.local, m.visitor):
+            if ref is not None and ref.id is not None and (ref.shortName or ref.name):
+                names.setdefault(str(ref.id), ref.shortName or ref.name or "")
     view.club_names = names
     if external is not None and external.odds_enabled:
         events = await outside("odds", lambda: external.odds_events(refresh=results),
@@ -221,9 +227,17 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         for w, played in view.matches.items():
             store.store_results(w, played)
         known_results = store.results()
+        played = store.results_by_week()
+    if external is not None and external.results_enabled:
+        season = season_of(now.astimezone(view.tz))
+        body = await outside("real fixtures", lambda: external.real_matches(season, refresh=results),
+                             lambda: external.real_matches(season, refresh=False), errors)
+        if body:
+            view.data_check = cross_check(parse_matches(body), view.matches, played, now, aliases, view.when)
     kickoff = next_kickoff(view.matches, week, now)
     view.fixtures = FixtureModel(club_records(known_results, now), view.matches,
-                                 kickoff.jornada if kickoff else week, names, odds=view.odds)
+                                 kickoff.jornada if kickoff else week, names, odds=view.odds,
+                                 postponed=view.data_check.postponed if view.data_check else ())
     view.formations = parse_formations(await fetch("formations", client.get_free_formations, []))
     if market:
         view.market = await fetch("market", lambda: client.get_market(league_id), [])
@@ -391,6 +405,37 @@ def _odds(view: LeagueView) -> str:
     rows.sort(key=lambda r: -r[0])
     return "\n".join([f"🎲 Jornada {kickoff.jornada} by the odds (★ = your players' clubs):"]
                      + [r for _, r in rows])
+
+
+CHECK_LABELS = {"postponed": "Not being played", "kickoff": "Kickoff moved",
+                "score": "Result differs", "missing": "Result missing in LaLiga Fantasy"}
+
+
+def _data_check(view: LeagueView) -> str:
+    check = view.data_check
+    if check is None:
+        return ""
+    unpaired = f" ({check.unpaired} couldn't be paired by club name)" if check.unpaired else ""
+    if not check.problems:
+        return (f"🔎 football-data.org agrees with LaLiga Fantasy: {check.fixtures} upcoming fixtures, "
+                f"{check.results} recent results{unpaired}.")
+    owners: dict[str, list[str]] = {}
+    for p in view.my_squad:
+        owners.setdefault(str(player_club(p.player)), []).append(p.name)
+    lines = [f"🔎 LaLiga Fantasy vs football-data.org{unpaired}:"]
+    for p in check.problems:
+        match = f"{view.club_names.get(p.home, p.home)} v {view.club_names.get(p.away, p.away)}"
+        line = f" • {CHECK_LABELS[p.kind]}: {match} (jornada {p.jornada})"
+        if p.kind == "postponed":
+            yours = owners.get(p.home, []) + owners.get(p.away, [])
+            line += (f": {p.real}. Points only come at a later recierre, so they count half here"
+                     + (f". Yours: {', '.join(yours)}" if yours else ""))
+        else:
+            line += f": LaLiga Fantasy {p.fantasy}, football-data.org {p.real}"
+            if p.kind == "kickoff":
+                line += ". Check the lineup deadline in the app"
+        lines.append(line)
+    return "\n".join(lines[:9])
 
 
 def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: dict[str, int]) -> str:
@@ -600,6 +645,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
         _header(view, team_value),
         _lineup_and_readiness(view),
         _odds(view),
+        _data_check(view),
         _market(view, team_value, d1, d3),
         _clauses(view),
         _exposure(view),

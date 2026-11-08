@@ -28,6 +28,9 @@ when it doesn't.
   on Telegram, and an hourly guard that only speaks up when the next jornada
   would cost you points. Both only read from LaLiga: they recommend, and you
   act in the app. See [The daily briefing](#the-daily-briefing).
+- **Outside data** (optional, free). Bookmakers' odds for fixture difficulty,
+  and real fixtures and results to catch where LaLiga Fantasy's calendar is
+  wrong. See [Outside data](#outside-data).
 - **Acting from Telegram** (optional, off by default). Buttons under the
   briefing for the actions it suggests. Each one checks LaLiga again and asks
   you to confirm; until you switch off dry run, confirming only shows what
@@ -337,6 +340,40 @@ Matches are paired with LaLiga's fixtures by club name ("Athletic Bilbao"
 and "Athletic Club" are the same club) and kickoff date, so a renamed club
 needs adding to `src/fantasybot/external/names.py`.
 
+### Real fixtures and results (football-data.org)
+
+LaLiga Fantasy's calendar sometimes lags behind reality, and everything the
+bot suggests is built on it. Each morning the briefing compares the next
+three jornadas and the last two jornadas' results with
+[football-data.org](https://www.football-data.org) and says where they
+disagree (a 🔎 section):
+
+- **Not being played** (postponed, suspended or cancelled) while LaLiga
+  Fantasy still lists it. LaLiga Fantasy adds those players' points later,
+  in a "recierre", to the teams that lined them up, once the match is played
+  ([how it's handled](https://www.comuniate.com/noticias/28974/que-ocurrira-con-los-puntos-del-villarreal-espanyol-en-laliga-fantasy)).
+  The date is unknown, so the bot counts such a fixture at half and names
+  your players in it.
+- **Kickoff moved** by more than 30 minutes. If it's the jornada's first
+  match, the lineup deadline moves with it; check the app.
+- **Result differs**, or a result football-data.org has that LaLiga Fantasy
+  doesn't yet. Results feed fixture difficulty when there are no odds.
+
+When everything agrees it's a single line. Matches whose time isn't
+confirmed yet are not compared.
+
+Set up:
+
+1. Register for a free token at <https://www.football-data.org/client/register>
+   (the free plan covers LaLiga, 10 calls a minute).
+2. `./fb secret set football_data_token` and paste it.
+3. `./fb healthcheck --no-alert` shows `football_data` OK with the season.
+
+One call a day for the briefing, one for the health check; cached like the
+odds, and the guard only reads the cache.
+
+Football data provided by the Football-Data.org API.
+
 ## Acting from Telegram
 
 The briefing can end with buttons for the actions it suggests:
@@ -500,6 +537,7 @@ as unset.
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
 | `FANTASYBOT_ODDS_API_KEY_FILE` | | file holding The Odds API key (set by Docker; `./fb secret set odds_api_key`) |
+| `FANTASYBOT_FOOTBALL_DATA_TOKEN_FILE` | | file holding the football-data.org token (set by Docker; `./fb secret set football_data_token`) |
 | `FANTASYBOT_ODDS_REGIONS` | `eu` | bookmaker regions to average (`eu`, `uk`; each extra region costs credits) |
 
 ## Security notes
@@ -562,6 +600,10 @@ This product includes ‘LaLigaApp’ (c) 2025–present Externoak —
 <https://github.com/Externoak/LaLigaApp/>. FantasyBot ports its auth flow,
 API endpoint map and response adapters to Python. This attribution does not
 imply endorsement by the original authors.
+
+Football data provided by the Football-Data.org API
+(<https://www.football-data.org>), when you set up a token. Match odds come
+from The Odds API (<https://the-odds-api.com>), when you set up a key.
 
 FantasyBot is licensed under GPL-3.0-or-later, including LaLigaApp's
 additional attribution term (GPLv3 §7). See [LICENSE](LICENSE) and
