@@ -37,6 +37,7 @@ from .analysis import (
     read_lineup,
     sell_to_cover,
 )
+from .cash import DRIFT_LIMIT, CashEstimates, estimate
 from .difficulty import HORIZON, FixtureModel, club_records
 from .history import PriceHistory
 from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
@@ -46,6 +47,7 @@ T = TypeVar("T")
 
 TELEGRAM_CHUNK = 3800
 MAX_DETAIL_CALLS = 45
+MAX_ACTIVITY_PAGES = 40  # the first run reads the whole feed; later runs stop at known entries
 ACTIVITY_LABELS = {1: "bought", 4: "shielded", 7: "invalid lineup", 9: "joined the league",
                    31: "signed", 32: "clause steal", 33: "sold"}
 
@@ -73,6 +75,12 @@ class LeagueView:
     errors: list[str] = field(default_factory=list)
     tz: tzinfo = timezone.utc
     fixtures: FixtureModel | None = None
+    cash: CashEstimates | None = None
+
+    def rival_cash(self, entry: StandingEntry) -> int | None:
+        if self.cash is None or entry.team.manager is None:
+            return None
+        return self.cash.get(entry.team.manager.id)
 
     def outlook_fn(self) -> Callable[[Player], FixtureOutlook] | None:
         return self.fixtures.outlook if self.fixtures else None
@@ -174,7 +182,23 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         view.market = await fetch("market", lambda: client.get_market(league_id), [])
         view.players = await fetch("players", client.get_all_players, [])
     if activity:
-        view.activity = await fetch("activity", lambda: client.get_league_activity(league_id, 0), [])
+        with PriceHistory(settings.state_dir / "history.sqlite") as store:
+            for page in range(MAX_ACTIVITY_PAGES):
+                entries = await fetch("activity", lambda p=page: client.get_league_activity(league_id, p),
+                                      None)
+                if not entries:
+                    break
+                if page == 0:
+                    view.activity = entries
+                if store.store_activity(entries) == 0:
+                    break  # caught up with what earlier runs stored
+            my_manager = me.team.manager.id if me.team.manager else user.user_id
+            managers = [e.team.manager.id for e in standing if e.team.manager]
+            view.cash = estimate(store.activity(), my_manager, view.balance, managers)
+            if view.cash is not None:
+                unexplained = view.cash.unexplained
+                previous = store.record_offset(now.astimezone(view.tz).date(), unexplained)
+                view.cash.uncertain = previous is not None and abs(previous - unexplained) > DRIFT_LIMIT
 
     if details:
         wanted: list[Id] = []
@@ -225,11 +249,18 @@ def _header(view: LeagueView, team_value: int | None) -> str:
     gap = (leader.points or 0) - (view.me.points or 0)
     behind = f" · {gap:.0f} behind {manager_name(leader)}" if gap > 0 else " · you're leading"
     limit = credit_limit(view.balance, team_value)
-    return "\n".join([
+    lines = [
         f"☀️ FantasyBot · jornada {view.week or '?'} · {view.now.astimezone(view.tz).strftime('%a %d %b')}",
         table + behind,
         f"Cash {money(view.balance)} · max bid {money(limit)} · team value {money(team_value)}",
-    ])
+    ]
+    if view.cash is not None:
+        rivals = [e for e in ordered if not same_id(e.team.id, view.me.team.id)]
+        est = " · ".join(f"{manager_name(e)} {money(view.rival_cash(e))}" for e in rivals
+                         if view.rival_cash(e) is not None)
+        if est:
+            lines.append(f"Rivals' cash ≈ {est}" + (" (uncertain today)" if view.cash.uncertain else ""))
+    return "\n".join(lines)
 
 
 def _lineup_and_readiness(view: LeagueView) -> str:
@@ -338,13 +369,36 @@ def _xp(p: SquadPlayer) -> str:
     return f"{p.outlook:.1f} xP/j{nxt}"
 
 
-def _exposure(view: LeagueView) -> str:
+def takers(view: LeagueView, clause: int) -> list[tuple[StandingEntry, int]]:
+    """Rivals whose estimated cash covers a clause (clauses can't be paid on debt)."""
+    out = []
+    for e in view.standing:
+        cash = view.rival_cash(e)
+        if not same_id(e.team.id, view.me.team.id) and cash is not None and cash >= clause:
+            out.append((e, cash))
+    return out
+
+
+def exposure_order(view: LeagueView) -> list[SquadPlayer]:
+    """Exposed players, those a rival can actually afford first."""
     at_risk = exposed(view.my_squad, view.now)
+    if view.cash is None:
+        return at_risk
+    return sorted(at_risk, key=lambda p: (not takers(view, p.clause or p.value), -p.outlook))
+
+
+def _exposure(view: LeagueView) -> str:
+    at_risk = exposure_order(view)
     if not at_risk:
         return "🛡️ None of your players can be taken by clause right now."
     lines = ["🛡️ Your players any rival can take right now:"]
     for p in at_risk[:5]:
-        lines.append(f" • {p.label} · clause {money(p.clause)} (value {money(p.value)}) · {_xp(p)}")
+        reach = ""
+        if view.cash is not None:
+            who = takers(view, p.clause or p.value)
+            reach = (" · within reach of " + ", ".join(f"{manager_name(e)} (≈{money(c)})" for e, c in who)
+                     if who else " · no rival can afford it (est.)")
+        lines.append(f" • {p.label} · clause {money(p.clause)} (value {money(p.value)}) · {_xp(p)}{reach}")
     top = ", ".join(p.name for p in at_risk[:2])
     lines.append(f" Shield {top} in the app (free, 2 players, 24h). Raising a clause costs half "
                  "the increase: +10M costs 5M.")

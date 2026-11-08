@@ -232,6 +232,7 @@ async def test_briefing_end_to_end(league, scout_client, settings, alerter, seed
 
     assert "1. Ana 1100 · 2. Bea 1000 · 3. You 900 · 4. Carl 800 · 200 behind Ana" in text
     assert "Cash 4.00M · max bid 24.00M" in text
+    assert "Rivals' cash ≈ Ana 15.00M · Bea 2.00M · Carl 21.00M" in text
     # Readiness and lineup
     assert "Not ready (jornada 12 starts Sat 14 Nov 21:00)" in text
     assert "Hurt (DEF) is injured but in your lineup." in text
@@ -253,6 +254,8 @@ async def test_briefing_end_to_end(league, scout_client, settings, alerter, seed
     assert "Shielded" not in clauses
     exposure = text.split("🛡️")[1]
     assert "Fwd A (FWD)" in exposure  # open clause, not shielded
+    assert "within reach of Carl (≈21.00M)" in exposure.split("Fwd A")[1].splitlines()[0]
+    assert "within reach of Ana (≈15.00M), Carl (≈21.00M)" in exposure.split("Def D")[1].splitlines()[0]
     assert "Keeper" not in exposure.split("Shield")[0]  # shielded
     assert "Mid A" not in exposure.split("Shield")[0]  # still locked
     # History and activity
@@ -385,3 +388,21 @@ def test_cli_briefing_prints_without_sending(tmp_path, monkeypatch, capsys, fake
     assert (tmp_path / "history.sqlite").exists()
     assert cli.main(["guard", "--no-send", "--hours", "0"]) == 0  # nothing within 0h
     assert "Nothing to fix" in capsys.readouterr().out
+
+
+async def test_activity_is_read_once_then_incrementally(league, scout_client, settings, alerter,
+                                                        seeded_store):
+    await run_briefing(scout_client, settings, alerter, now=NOW, send=False, sleep=no_sleep)
+    assert len(league.get_calls("league_activity")) == 3  # pages 0, 1 and the empty page 2
+    await run_briefing(scout_client, settings, alerter, now=NOW, send=False, sleep=no_sleep)
+    assert len(league.get_calls("league_activity")) == 4  # page 0 only: nothing new on it
+
+
+async def test_cash_estimates_flag_unexplained_jumps(league, scout_client, settings, alerter,
+                                                     seeded_store):
+    await run_briefing(scout_client, settings, alerter, now=NOW - timedelta(days=1), send=False,
+                       sleep=no_sleep)
+    league.data["team_money"] = {"teamMoney": 9_000_000}  # +5M the feed doesn't explain
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    assert "Rivals' cash ≈ Ana 20.00M · Bea 7.00M · Carl 26.00M (uncertain today)" in text

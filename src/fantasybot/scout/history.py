@@ -7,6 +7,8 @@ history: one row per player per day, in a SQLite file in the state directory
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sqlite3
 from collections.abc import Iterable
@@ -14,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..api.models import Match, Player
+from ..api.models import ActivityEntry, Match, Player
 from ..auth.store import ensure_private_dir
 from .model import position_of
 
@@ -38,6 +40,15 @@ CREATE TABLE IF NOT EXISTS results (
     visitor_score INTEGER,
     match_date    TEXT,
     PRIMARY KEY (week, match_id)
+);
+CREATE TABLE IF NOT EXISTS activity (
+    key     TEXT PRIMARY KEY,
+    created TEXT,
+    body    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cash_offsets (
+    day    TEXT PRIMARY KEY,
+    offset INTEGER NOT NULL
 );
 """
 
@@ -124,6 +135,32 @@ class PriceHistory:
                                 "match_date FROM results").fetchall()
         return [Match(id=r[0], localId=r[1], visitorId=r[2], localScore=r[3], visitorScore=r[4],
                       matchDate=r[5]) for r in rows]
+
+    # -- league activity (for cash estimates) ----------------------------------
+
+    def store_activity(self, entries: Iterable[ActivityEntry]) -> int:
+        """Stores entries; returns how many were new."""
+        new = 0
+        for e in entries:
+            body = e.model_dump_json()
+            key = str(e.id) if e.id is not None else hashlib.sha256(body.encode()).hexdigest()[:24]
+            cur = self._db.execute("INSERT OR IGNORE INTO activity VALUES (?, ?, ?)",
+                                   (key, e.createdAt, body))
+            new += cur.rowcount
+        self._db.commit()
+        return new
+
+    def activity(self) -> list[ActivityEntry]:
+        rows = self._db.execute("SELECT body FROM activity ORDER BY created").fetchall()
+        return [ActivityEntry.model_validate(json.loads(r[0])) for r in rows]
+
+    def record_offset(self, day: date, offset: int) -> int | None:
+        """Stores today's calibration offset; returns the previous day's, if any."""
+        prev = self._db.execute("SELECT offset FROM cash_offsets WHERE day < ? ORDER BY day DESC LIMIT 1",
+                                (day.isoformat(),)).fetchone()
+        self._db.execute("INSERT OR REPLACE INTO cash_offsets VALUES (?, ?)", (day.isoformat(), offset))
+        self._db.commit()
+        return prev[0] if prev else None
 
 
 def _club(club_id: object, club: object) -> str | None:

@@ -193,7 +193,8 @@ Every morning, one Telegram message (two if it's long) with what's worth
 acting on today:
 
 - **Standing and money.** Where you are, the gap to the leader, your cash,
-  and your maximum bid (cash + 20% of team value).
+  your maximum bid (cash + 20% of team value), and each rival's estimated
+  cash (see below).
 - **Readiness.** Anything that would cost points in the next jornada: a
   negative balance, an incomplete lineup, injured or suspended starters,
   players you've sold still in the lineup. Doubts, and starters who didn't
@@ -208,8 +209,8 @@ acting on today:
   buyout clause from cash (debt isn't allowed for clauses), best first and
   with the owner's rank. Also: players unlocking in the next 24h, and the
   best target you can't afford yet. Shielded players are left out.
-- **Your exposure.** Your players any rival could take right now, and which
-  two to shield. Shielding is free, lasts 24h without Premium, and you do it
+- **Your exposure.** Your players any rival could take right now, which
+  rivals can afford each one, and which two to shield. Shielding is free, lasts 24h without Premium, and you do it
   in the app. Raising a clause costs half the increase.
 - **Price moves.** Your players' and the league's biggest risers and fallers
   since yesterday. LaLiga's API only gives today's values, so the bot keeps
@@ -236,6 +237,19 @@ ranks above another:
 Lineups use next jornada's fixture. Market, clause and exposure picks use
 the average over the next three jornadas (shown as "xP/j"), because you keep
 a player for weeks. The model doesn't know about probable lineups yet.
+
+**Rivals' cash** is hidden by the API, so it's estimated from the league
+activity feed:
+
+- Each manager's purchases, sales, clause steals and jornada payouts are
+  added up. A clause steal pays the clause to the player's owner.
+- What the feed can't see (starting budget, daily rewards, clause raises) is
+  worked out from your own team, your real cash minus your own feed total,
+  and assumed to be the same for everyone.
+- If that unexplained part jumps by more than 2M overnight, the estimates
+  are marked "uncertain today".
+
+The full feed is read once, then only new entries each day.
 
 **The kickoff guard** runs every hour and stays silent unless the jornada
 starts within 24h and something would cost you points. It alerts once when it

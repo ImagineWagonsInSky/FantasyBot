@@ -146,11 +146,31 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
         "matchday_by_week": schedule(),
         "teams_master": [{"id": c, "name": f"Club {c}", "shortName": f"C{c}"}
                          for c in ("3", "5", "7", "9", "11")],
-        "league_activity": {"elements": [
-            {"activityTypeId": 32, "createdAt": iso(NOW - timedelta(hours=1)),
-             "description": "Ana clausuló a Fwd X por 12.000.000"},
-            {"activityTypeId": 6, "createdAt": iso(NOW - timedelta(hours=2)), "amount": 900_000},
-            {"activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=3)), "playerName": "Old news"},
-        ]},
+        # Two pages and then an empty one. Known answers (see test_scout):
+        # you -6M in the feed vs 4M real cash -> 10M unexplained;
+        # Ana +5M -> 15M, Bea -8M -> 2M, Carl +12M -1M -> 21M.
+        "league_activity_pages": [
+            {"elements": [
+                {"id": "A1", "activityTypeId": 32, "createdAt": iso(NOW - timedelta(hours=1)),
+                 "user1Id": 202, "user2Id": 404, "amount": 12_000_000,
+                 "description": "Ana clausuló a Fwd X por 12.000.000"},
+                {"id": "A2", "activityTypeId": 6, "createdAt": iso(NOW - timedelta(hours=2)),
+                 "user1Id": 202, "amount": 2_000_000},
+            ]},
+            {"elements": [
+                {"id": "A3", "activityTypeId": 33, "createdAt": iso(NOW - timedelta(days=3)),
+                 "user1Id": 202, "amount": 15_000_000, "playerName": "Sold one"},
+                {"id": "A4", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=4)),
+                 "user1Id": 101, "amount": 10_000_000, "playerName": "Old news"},
+                {"id": "A5", "activityTypeId": 33, "createdAt": iso(NOW - timedelta(days=5)),
+                 "user1Id": 101, "amount": 3_000_000},
+                {"id": "A6", "activityTypeId": 6, "createdAt": iso(NOW - timedelta(days=6)),
+                 "user1Id": 101, "amount": 1_000_000},
+                {"id": "A7", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=7)),
+                 "user1Id": 303, "amount": 8_000_000},
+                {"id": "A8", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=8)),
+                 "user1Id": 404, "amount": 1_000_000},
+            ]},
+        ],
     })
     return fake

@@ -193,12 +193,23 @@ class StandingEntry(ApiModel):
 
 
 class ActivityEntry(ApiModel):
+    """A league event. Types seen: 1 bought, 4 shielded, 6 jornada earnings,
+    7 invalid lineup, 9 joined, 31 signed, 32 clause steal, 33 sold.
+    user1 is the manager who acted; user2 the other side (e.g. the seller)."""
+
     activityTypeId: int
     id: Id | None = None
     createdAt: str | None = None
     timestamp: str | int | None = None
     amount: int | None = None
     playerMasterId: Id | None = None
+    playerName: str | None = None
+    user1Id: Id | None = None
+    user1Name: str | None = None
+    user2Id: Id | None = None
+    user2Name: str | None = None
+    description: str | None = None
+    weekNumber: int | None = None
 
 
 # -- a fantasy team ----------------------------------------------------------
