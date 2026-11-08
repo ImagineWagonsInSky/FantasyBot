@@ -180,14 +180,48 @@ async def test_transient_errors_are_retried(tokens, store, freeze, router, sleep
     assert not freeze.is_frozen()
 
 
-async def test_transient_errors_freeze_after_the_last_attempt(tokens, store, freeze, alerter, router):
+@pytest.mark.parametrize("failure", [httpx.Response(502), httpx.Response(429), httpx.ConnectError("offline"),
+                                     httpx.ReadTimeout("slow")])
+async def test_network_trouble_never_freezes(tokens, store, freeze, alerter, router, failure):
+    # A laptop waking up without Wi-Fi, or a B2C outage, says nothing about the token.
     seed(store, id_exp=NOW - 10)
-    router.add("POST", TOKEN_URL, httpx.Response(502))
+    router.add("POST", TOKEN_URL, failure)
+    with pytest.raises(AuthUnavailable, match="nothing is frozen and the next run tries again"):
+        await tokens.bearer()
+    assert len(router.b2c()) == 3  # retried first
+    assert not freeze.is_frozen() and alerter.messages == []
+
+
+async def test_after_a_network_blip_the_next_run_just_works(tokens, store, freeze, router):
+    seed(store, id_exp=NOW - 10)
+    new_id = make_jwt(NOW + 3600)
+    router.add("POST", TOKEN_URL, httpx.ConnectError("offline"), httpx.ConnectError("offline"),
+               httpx.ConnectError("offline"),
+               httpx.Response(200, json={"id_token": new_id, "refresh_token": "rt-2"}))
     with pytest.raises(AuthUnavailable):
         await tokens.bearer()
-    assert len(router.b2c()) == 3
-    assert freeze.state().kind == "transient"
-    assert len(alerter.messages) == 1
+    assert await tokens.bearer() == new_id and not freeze.is_frozen()
+
+
+async def test_a_network_blip_keeps_a_still_valid_session(tokens, store, freeze, router):
+    seed(store, id_exp=NOW + 60)  # inside the refresh margin, but not expired
+    router.add("POST", TOKEN_URL, httpx.ConnectError("offline"))
+    assert await tokens.bearer() == store.load().id_token
+    assert not freeze.is_frozen()
+
+
+async def test_a_dead_token_after_a_blip_still_freezes(tokens, store, freeze, alerter, router):
+    seed(store, id_exp=NOW - 10)
+    router.add("POST", TOKEN_URL, httpx.ConnectError("offline"), httpx.ConnectError("offline"),
+               httpx.ConnectError("offline"),
+               httpx.Response(400, json={"error": "invalid_grant",
+                                         "error_description": "AADB2C90080: The grant has expired."}))
+    with pytest.raises(AuthUnavailable):
+        await tokens.bearer()
+    assert not freeze.is_frozen()
+    with pytest.raises(AuthUnavailable):
+        await tokens.bearer()
+    assert freeze.state().kind == "invalid_grant" and len(alerter.messages) == 1
 
 
 async def test_frozen_session_does_not_call_b2c(tokens, store, freeze, router):

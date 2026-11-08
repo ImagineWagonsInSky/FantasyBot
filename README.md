@@ -10,7 +10,8 @@ when it doesn't.
 - **Auth** (`fantasybot auth …`). Uses the refresh-token flow against
   LaLiga's B2C sign-in policy, with the `id_token` as the bearer. Each
   refresh rotates the refresh token, and the token is stored encrypted. If
-  the session can't be renewed, writes freeze and one alert is sent.
+  LaLiga refuses the refresh token, writes freeze and one alert is sent (a
+  network error just retries next run).
 - **API client** (`fantasybot.api.FantasyClient`). Every endpoint in
   LaLigaApp's `api.js` is a typed async method that returns pydantic models.
   - The competition ID comes from config.
@@ -535,11 +536,15 @@ health check: if `leagues` shows OK, the token reaches your Fantasy league.
 
 ## When an alert arrives
 
-- **"writes are frozen"**: LaLiga stopped accepting the refresh token, or it
-  couldn't be renewed. Import a fresh token (see
-  [Getting your LaLiga token](#getting-your-laliga-token)). Reads keep
-  working until the current session expires; writes stay blocked until
-  then.
+- **"writes are frozen"**: LaLiga refused the refresh token (expired,
+  revoked, or the sign-in policy changed). Import a fresh token (see
+  [Getting your LaLiga token](#getting-your-laliga-token)); that also lifts
+  the freeze. Reads keep working until the current session expires; writes
+  stay blocked until you import.
+- **"couldn't reach LaLiga's login"** (`network error`, `timed out`, HTTP 5xx
+  or 429 from login.laliga.es): the laptop was offline or LaLiga's login was
+  down. Nothing is frozen and the next run tries again; no action needed
+  unless it keeps happening.
 - **"refresh token expires …"**: import a fresh token before that date.
 - **"unexpected shape: …"**: LaLiga changed a response. Save fixtures
   (`./fb fixtures`) so the models can be updated.

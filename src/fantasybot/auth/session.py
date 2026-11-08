@@ -10,7 +10,9 @@ bot:
   processes (file lock), and re-read the store first, so two processes never
   fork the token chain;
 * where LaLigaApp silently drops a dead refresh token and carries on, this
-  freezes writes and sends one alert.
+  freezes writes and sends one alert. A network error, timeout or B2C
+  outage doesn't freeze: it says nothing about the token, and the next
+  attempt either works or gets a definite answer (invalid_grant) that does.
 """
 
 from __future__ import annotations
@@ -243,6 +245,12 @@ class TokenManager:
                 try:
                     response = await self._redeem(current.refresh_token, current.client_id)
                 except RefreshError as exc:
+                    if exc.transient:  # couldn't reach B2C: retry next run, don't freeze
+                        log.warning("token refresh failed (%s); nothing frozen, the next run retries", exc)
+                        if mode == "expiring" and self._remaining(current) > 0:
+                            return current.id_token
+                        raise AuthUnavailable(f"couldn't reach LaLiga's login ({exc}); nothing is "
+                                              "frozen and the next run tries again") from None
                     await self._freeze_and_alert(exc.kind.value, str(exc), current)
                     if mode == "expiring" and self._remaining(current) > 0:
                         log.warning("refresh failed; using the current token until it expires")
