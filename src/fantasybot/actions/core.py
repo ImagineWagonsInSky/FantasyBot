@@ -1,10 +1,14 @@
 """Suggested actions: what the briefing offers, the live checks, and carrying them out.
 
-Four kinds, all things you'd otherwise do in the app:
-  lineup  save the suggested best XI
-  bid     bid on a market player (minimum, +5% or +10%)
-  steal   pay a rival player's buyout clause
-  raise   raise one of your exposed players' clauses
+The kinds, all things you'd otherwise do in the app:
+  lineup    save the suggested best XI
+  bid       bid on a market player (minimum, +5% or +10%)
+  steal     pay a rival player's buyout clause
+  raise     raise one of your exposed players' clauses
+  sell      list one of your players (at value, +5% or +10%)
+  accept    accept an offer for one of your players
+  decline   decline an offer
+  withdraw  take a listing back
 
 Nothing here trusts the briefing: prepare() re-reads LaLiga every time and
 refuses if anything no longer holds. Shielding isn't offered: the API call
@@ -20,10 +24,11 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..api import FantasyClient, LineupUpdate, WriteResult
-from ..api.models import same_id
+from ..api.models import MarketItem, Offer, TeamPlayer, same_id
 from ..config import Settings
 from ..scout.analysis import (
     Rival,
+    SquadPlayer,
     best_lineup,
     clause_radar,
     credit_limit,
@@ -35,9 +40,13 @@ from ..scout.analysis import (
 )
 from ..scout.briefing import LeagueView, exposure_order, takers
 from ..scout.model import DEF, FWD, GK, MID
+from ..scout.selling import bidder_name, on_sale, sell_candidates, should_withdraw
 from .store import ActionStore, Proposal
 
-KIND_NAMES = {"lineup": "lineup change", "bid": "bid", "steal": "clause steal", "raise": "clause raise"}
+KIND_NAMES = {"lineup": "lineup change", "bid": "bid", "steal": "clause steal", "raise": "clause raise",
+              "sell": "listing", "accept": "sale (accepting an offer)", "decline": "declined offer",
+              "withdraw": "withdrawn listing"}
+SELL_STEPS = (1.0, 1.05, 1.10)
 BID_STEPS = (1.0, 1.05, 1.10)
 LINEUP_MIN_GAIN = 0.5
 
@@ -139,6 +148,33 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
             }, expires))
             offered += 1
 
+    sales = on_sale(view.market, squad, view.offers, view.me.team.id) if squad else []
+    keep = view.keep()
+    if {"accept", "decline"} & kinds:
+        for s in [s for s in sales if s.best is not None and s.market_id is not None][:3]:
+            best = s.best
+            bidder = bidder_name(best, view.standing)
+            common = {**base, "player_team_id": s.player_team_id, "name": s.name, "market_id": s.market_id,
+                      "offer_id": best.id, "money": best.money, "bidder": bidder}
+            if "accept" in kinds:
+                out.append(Suggestion("accept", f"accept {bidder}'s offer for {s.name}", {
+                    **common, "options": [f"✅ Sell {s.name} to {bidder} · {money(best.money)}"]},
+                    now + timedelta(hours=12)))
+            if "decline" in kinds:
+                out.append(Suggestion("decline", f"decline {bidder}'s offer for {s.name}", {
+                    **common, "options": [f"✖ Decline {bidder}'s {money(best.money)} for {s.name}"]},
+                    now + timedelta(hours=12)))
+    if "withdraw" in kinds:
+        for s in sales:
+            why = should_withdraw(s, keep)
+            if why and s.market_id is not None:
+                out.append(Suggestion("withdraw", f"withdraw {s.name}", {
+                    **base, "player_team_id": s.player_team_id, "name": s.name, "market_id": s.market_id,
+                    "options": [f"↩ Withdraw {s.name} ({why})"[:64]]}, now + timedelta(hours=12)))
+    if "sell" in kinds and squad:
+        for c in sell_candidates(squad, keep, view.balance, view.change_3d, sales):
+            out.append(sell_suggestion(view, c.player, c.reason, now))
+
     if "raise" in kinds and view.balance is not None:
         for p in exposure_order(view)[:2]:
             clause = p.clause or p.value
@@ -156,6 +192,45 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
                 "options": [f"🛡️ {p.name} +{money(i)} (pay {money(i // 2)})" for i in options],
             }, now + timedelta(hours=12)))
     return out
+
+
+def sell_suggestion(view: LeagueView, player: SquadPlayer, reason: str, now: datetime) -> Suggestion:
+    prices = sorted({_round_up(player.value * s, 10_000) for s in SELL_STEPS})
+    in_best_xi = any(str(k.player.id) == str(player.player.id) for k in view.keep())
+    return Suggestion("sell", f"list {player.name}", {
+        "league_id": view.league_id, "team_id": view.me.team.id,
+        "player_team_id": player.player_team_id, "name": player.name, "value": player.value,
+        "prices": prices, "reason": reason, "in_best_xi": in_best_xi,
+        "options": [f"💸 List {player.name} {money(prices[0])}"] + [money(p) for p in prices[1:]],
+    }, now + timedelta(hours=12))
+
+
+async def _my_listing(client: FantasyClient, league: Any, team_id: Any,
+                      player_team_id: Any) -> MarketItem | None:
+    for item in await client.get_market(league):
+        if (item.discr == "marketPlayerTeam" and same_id(item.seller_team_id, team_id) and item.playerTeam
+                and same_id(item.playerTeam.playerTeamId, player_team_id) and not item.directOffer):
+            return item
+    return None
+
+
+async def _live_offer(client: FantasyClient, league: Any, params: dict[str, Any]) -> Offer:
+    offers = await client.get_player_offer(league, params["player_team_id"])
+    offer = next((o for o in offers if same_id(o.id, params["offer_id"])), None)
+    if offer is None or not offer.open:
+        raise ActionRefused(f"{params['bidder']}'s offer for {params['name']} isn't open any more.")
+    if offer.money != params["money"]:
+        raise ActionRefused(f"{params['bidder']}'s offer changed to {money(offer.money)}; "
+                            "the next briefing will show it.")
+    return offer
+
+
+async def _owned(client: FantasyClient, league: Any, team_id: Any, params: dict[str, Any]) -> TeamPlayer:
+    squad = await client.get_team_data(league, team_id)
+    owned = next((pt for pt in squad.players if same_id(pt.player_team_id, params["player_team_id"])), None)
+    if owned is None:
+        raise ActionRefused(f"{params['name']} isn't in your squad any more.")
+    return owned
 
 
 # -- live checks -----------------------------------------------------------------
@@ -267,6 +342,42 @@ async def prepare(proposal: Proposal, option: int, client: FantasyClient, settin
                   "tactical_formation": params["formation"]}
         return Plan(kind, summary, 0, {"lineup": lineup})
 
+    if kind == "sell":
+        price = params["prices"][option]
+        owned = await _owned(client, league, team_id, params)
+        if await _my_listing(client, league, team_id, params["player_team_id"]) is not None:
+            raise ActionRefused(f"{name} is already on the market.")
+        value = owned.playerMaster.marketValue or params["value"]
+        warnings = []
+        if price < value:
+            warnings.append(f"That's below his value now ({money(value)}).")
+        if params.get("in_best_xi"):
+            warnings.append(f"{name} is in your best XI.")
+        return Plan(kind, f"List {name} for {money(price)} (value {money(value)}). Offers come in while "
+                          "he's listed; nothing is sold until you accept one.",
+                    0, {"player_team_id": owned.player_team_id, "price": price}, warnings)
+
+    if kind in ("accept", "decline"):
+        await _owned(client, league, team_id, params)
+        offer = await _live_offer(client, league, params)
+        bidder, amount = params["bidder"], offer.money or 0
+        if kind == "decline":
+            return Plan(kind, f"Decline {bidder}'s {money(amount)} offer for {name}.", 0,
+                        {"market_id": params["market_id"], "offer_id": offer.id})
+        owned = await _owned(client, league, team_id, params)
+        value = owned.playerMaster.marketValue or 0
+        warnings = [f"That's below his value ({money(value)})."] if value and amount < value else []
+        return Plan(kind, f"Sell {name} to {bidder} for {money(amount)} (value {money(value)}). "
+                          f"He leaves your squad.\nCash {money(cash)} → {money(cash + amount)}.",
+                    0, {"market_id": params["market_id"], "offer_id": offer.id, "money": amount}, warnings)
+
+    if kind == "withdraw":
+        listing = await _my_listing(client, league, team_id, params["player_team_id"])
+        if listing is None:
+            raise ActionRefused(f"{name} isn't on the market any more.")
+        return Plan(kind, f"Take {name} off the market (listed at {money(listing.salePrice)}).", 0,
+                    {"market_id": listing.id})
+
     raise ActionRefused(f"Unknown action {kind}.")
 
 
@@ -290,6 +401,14 @@ async def execute(plan: Plan, client: FantasyClient, league_id: Any, team_id: An
         return await client.increase_buyout_clause(league_id, call["player_team_id"], 2.0, call["increase"])
     if plan.kind == "lineup":
         return await client.update_lineup(team_id, LineupUpdate(**call["lineup"]))
+    if plan.kind == "sell":
+        return await client.sell_player_to_market(league_id, call["player_team_id"], call["price"])
+    if plan.kind == "accept":
+        return await client.accept_offer(league_id, call["market_id"], call["offer_id"], call["money"])
+    if plan.kind == "decline":
+        return await client.decline_offer(league_id, call["market_id"], call["offer_id"])
+    if plan.kind == "withdraw":
+        return await client.withdraw_player_from_market(league_id, call["market_id"])
     raise ActionRefused(f"Unknown action {plan.kind}.")
 
 

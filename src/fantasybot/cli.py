@@ -16,6 +16,7 @@ from .actions.flow import ActionCenter, listen
 from .actions.store import ActionStore
 from .alerts import LogAlerter, telegram_recent_chats
 from .api import FantasyClient
+from .api.models import same_id
 from .auth import (
     AuthUnavailable,
     FreezeGuard,
@@ -30,8 +31,9 @@ from .fixtures import FixtureRecorder
 from .healthcheck import HealthCheck, run_and_alert
 from .redact import redact
 from .runtime import Runtime, open_runtime
+from .scout.analysis import manager_name, money
 from .scout.briefing import BriefingError, LeagueView, briefing
-from .scout.guard import run_guard
+from .scout.guard import guard_check
 from .scout.history import PriceHistory
 from .telegram import TelegramBot
 
@@ -356,6 +358,53 @@ async def cmd_listen(rt: Runtime, args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_cash_check(rt: Runtime, args: argparse.Namespace) -> int:
+    """Everything the rivals' cash estimate is built from, to check it against reality."""
+    import datetime as dt
+
+    from .scout.briefing import gather
+    from .scout.cash import feed_summary, ledgers
+
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        view = await gather(rt.client, rt.settings, now, rivals=False, market=False, details=False,
+                            results=False)
+    except BriefingError as exc:
+        print(f"cash-check failed: {exc}", file=sys.stderr)
+        return 1
+    with PriceHistory(rt.settings.state_dir / "history.sqlite") as store:
+        feed = store.activity()
+    summary = feed_summary(feed)
+    books = ledgers(feed)
+    names = {1: "bought", 4: "shielded", 6: "jornada payout (ignored)", 7: "invalid lineup",
+             9: "joined", 31: "signed", 32: "clause steal", 33: "sold"}
+    print(f"Activity feed: {summary['entries']} entries, {summary['first']} → {summary['last']}")
+    print("Types: " + ", ".join(f"{t} {names.get(t, 'UNKNOWN')} ×{n}" for t, n in summary["types"].items()))
+    anon = summary["without_manager"]
+    print("Entries with no manager: " + (", ".join(f"type {t} ×{n}" for t, n in anon.items()) or "none"))
+    cash = view.cash
+    if cash is None:
+        print("No estimate (your own balance couldn't be read).")
+        return 1
+    print(f"Unexplained part of your cash: {money(cash.unexplained)} "
+          "(should be close to the starting budget, e.g. 100M)")
+    print(f"Earnings: {rt.settings.earn_per_point:,} per point (FANTASYBOT_EARN_PER_POINT)\n")
+    print(f"{'manager':<16}{'points':>7}{'earned':>10}{'bought':>10}{'sold':>10}"
+          f"{'clauses -':>11}{'clauses +':>11}{'cash':>11}")
+    for e in sorted(view.standing, key=lambda r: -(r.points or 0)):
+        mid = str(e.team.manager.id) if e.team.manager else "?"
+        book = books.get(mid)
+        mine = same_id(e.team.id, view.me.team.id)
+        est = view.balance if mine else cash.by_manager.get(mid)
+        flag = " (real)" if mine else (" IMPOSSIBLE" if mid in cash.implausible else "")
+        earned = rt.settings.earn_per_point * max(e.points or 0, 0)
+        print(f"{('You' if mine else manager_name(e))[:15]:<16}{e.points or 0:>7.0f}{money(earned):>10}"
+              f"{money(book.bought if book else 0):>10}{money(book.sold if book else 0):>10}"
+              f"{money(book.clauses_paid if book else 0):>11}"
+              f"{money(book.clauses_received if book else 0):>11}{money(est):>11}{flag}")
+    return 0
+
+
 def cmd_actions_log(settings: Settings) -> int:
     with ActionStore(settings.state_dir / "actions.sqlite") as store:
         rows = store.executions()
@@ -371,12 +420,16 @@ def cmd_actions_log(settings: Settings) -> int:
 
 async def cmd_guard(rt: Runtime, args: argparse.Namespace) -> int:
     try:
-        message = await run_guard(rt.client, rt.settings, rt.alerter, send=not args.no_send,
-                                  window_hours=args.hours)
+        result = await guard_check(rt.client, rt.settings, rt.alerter, send=not args.no_send,
+                                   window_hours=args.hours)
     except BriefingError as exc:
         print(f"Guard failed: {exc}", file=sys.stderr)
         return 1
-    print(message or "Nothing to fix before the next jornada.")
+    print(result.message or "Nothing to fix before the next jornada.")
+    bot = telegram_bot(rt)
+    if result.message and result.to_sell and not args.no_send and rt.settings.actions and bot:
+        with action_store(rt) as store:
+            await ActionCenter(rt.settings, rt.client, bot, store).offer_sales(result.view, result.to_sell)
     return 0
 
 
@@ -431,6 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
     guard.add_argument("--hours", type=float, default=24.0,
                        help="start warning this many hours before kickoff (default 24)")
     sub.add_parser("snapshot", help="record today's player values in the price history")
+    sub.add_parser("cash-check", help="show what the rivals' cash estimate is built from")
     lis = sub.add_parser("listen", help="answer Telegram buttons and commands (needs FANTASYBOT_ACTIONS=on)")
     lis.add_argument("--once", action="store_true", help="handle one batch of updates, then exit")
     act = sub.add_parser("actions", help="actions taken from Telegram")
@@ -460,6 +514,8 @@ async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
             return await cmd_snapshot(rt, args)
         if args.command == "listen":
             return await cmd_listen(rt, args)
+        if args.command == "cash-check":
+            return await cmd_cash_check(rt, args)
     raise AssertionError(f"unhandled command {args.command}")
 
 

@@ -424,10 +424,11 @@ class FantasyClient:
                                  f"{self._cmp}/league/{_seg(league_id)}/buyout/{_seg(player_team_id)}/pay",
                                  {"buyoutClauseToPay": buyout_clause_to_pay})
 
-    async def sell_player_to_market(self, league_id: Id, player_id: Id, sale_price: int) -> WriteResult:
+    async def sell_player_to_market(self, league_id: Id, player_team_id: Id, sale_price: int) -> WriteResult:
+        """List one of your players. LaLigaApp sends the playerTeamId as playerId."""
         return await self._write("sell_player_to_market", "POST",
                                  f"{self._cmp}/league/{_seg(league_id)}/market/sell",
-                                 {"playerId": player_id, "salePrice": sale_price})
+                                 {"playerId": player_team_id, "salePrice": sale_price})
 
     async def withdraw_player_from_market(self, league_id: Id, market_id: Id) -> WriteResult:
         return await self._write("withdraw_player_from_market", "DELETE",

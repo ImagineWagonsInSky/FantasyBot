@@ -15,7 +15,7 @@ from typing import Any, TypeVar
 
 from ..alerts import Alerter
 from ..api import ApiError, FantasyClient, ResponseShapeError
-from ..api.models import ActivityEntry, Id, Lineup, MarketItem, Match, Player, StandingEntry, same_id
+from ..api.models import ActivityEntry, Id, Lineup, MarketItem, Match, Offer, Player, StandingEntry, same_id
 from ..auth import AuthUnavailable
 from ..config import Settings
 from .analysis import (
@@ -41,6 +41,7 @@ from .cash import DRIFT_LIMIT, CashEstimates, estimate
 from .difficulty import HORIZON, FixtureModel, club_records
 from .history import PriceHistory
 from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
+from .selling import bidder_name, offer_ids_to_check, on_sale, sell_candidates, should_withdraw
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -76,6 +77,13 @@ class LeagueView:
     tz: tzinfo = timezone.utc
     fixtures: FixtureModel | None = None
     cash: CashEstimates | None = None
+    offers: dict[str, list[Offer]] = field(default_factory=dict)  # by your playerTeamId
+    change_3d: dict[str, int] = field(default_factory=dict)  # value change by player id
+
+    def keep(self) -> list[SquadPlayer]:
+        """The best XI plus coach: who not to sell."""
+        plan = best_lineup(self.my_squad, self.formations) if self.my_squad else None
+        return (plan.starters + ([plan.coach] if plan.coach else [])) if plan else []
 
     def rival_cash(self, entry: StandingEntry) -> int | None:
         if self.cash is None or entry.team.manager is None:
@@ -193,8 +201,11 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
                 if store.store_activity(entries) == 0:
                     break  # caught up with what earlier runs stored
             my_manager = me.team.manager.id if me.team.manager else user.user_id
-            managers = [e.team.manager.id for e in standing if e.team.manager]
-            view.cash = estimate(store.activity(), my_manager, view.balance, managers)
+            points = {e.team.manager.id: e.points or 0 for e in standing if e.team.manager}
+            values = {e.team.manager.id: e.teamValue or e.team.teamValue
+                      for e in standing if e.team.manager}
+            view.cash = estimate(store.activity(), my_manager, view.balance, points, values,
+                                 settings.earn_per_point)
             if view.cash is not None:
                 unexplained = view.cash.unexplained
                 previous = store.record_offset(now.astimezone(view.tz).date(), unexplained)
@@ -214,6 +225,11 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
     for team_id, data in team_data.items():
         if data is not None:
             view.squads[team_id] = build_squad(data, view.details, week, view.outlook_fn())
+
+    if market:
+        for ptid in offer_ids_to_check(view.market, view.my_squad, me.team.id)[:10]:
+            view.offers[str(ptid)] = await fetch(
+                "offers", lambda p=ptid: client.get_player_offer(league_id, p), [])
     return view
 
 
@@ -254,7 +270,10 @@ def _header(view: LeagueView, team_value: int | None) -> str:
         table + behind,
         f"Cash {money(view.balance)} · max bid {money(limit)} · team value {money(team_value)}",
     ]
-    if view.cash is not None:
+    if view.cash is not None and not view.cash.usable:
+        lines.append("Rivals' cash: the estimate doesn't add up today (it puts someone past the "
+                     "debt limit), so it isn't used. `./fb cash-check` shows why.")
+    elif view.cash is not None:
         rivals = [e for e in ordered if not same_id(e.team.id, view.me.team.id)]
         est = " · ".join(f"{manager_name(e)} {money(view.rival_cash(e))}" for e in rivals
                          if view.rival_cash(e) is not None)
@@ -405,6 +424,38 @@ def _exposure(view: LeagueView) -> str:
     return "\n".join(lines)
 
 
+def _vs_value(amount: int | None, value: int) -> str:
+    if not amount or not value:
+        return ""
+    return f" ({(amount / value - 1) * 100:+.0f}% vs value)"
+
+
+def _selling(view: LeagueView) -> str:
+    squad = view.my_squad
+    if not squad:
+        return "💸 Selling: your squad couldn't be loaded."
+    keep = view.keep()
+    sales = on_sale(view.market, squad, view.offers, view.me.team.id)
+    lines = ["💸 Selling"]
+    for s in sales[:5]:
+        status = f"listed {money(s.listed_price)}" if s.listed_price is not None else "not listed"
+        closes = f" · closes {view.when(s.expires)}" if s.expires else ""
+        best = s.best
+        offer = (f"best offer {money(best.money)} from {bidder_name(best, view.standing)}"
+                 f"{_vs_value(best.money, s.value)}") if best else "no offers yet"
+        lines.append(f" • {s.name} · {status} (value {money(s.value)}){closes} · {offer}")
+        why = should_withdraw(s, keep)
+        if why:
+            lines.append(f"   ↩ think about withdrawing: {why}")
+    candidates = sell_candidates(squad, keep, view.balance, view.change_3d, sales)
+    if candidates:
+        lines.append(" Worth selling (not in your best XI):")
+        lines += [f" • {c.player.label} · value {money(c.player.value)} · {c.reason}" for c in candidates]
+    if len(lines) == 1:
+        lines.append(" • nothing listed, no offers, nothing worth selling")
+    return "\n".join(lines)
+
+
 def _movers(view: LeagueView, history: PriceHistory, days_recorded: int) -> str:
     if days_recorded < 2:
         return "📈 Price history started today; trends appear from tomorrow."
@@ -448,6 +499,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
     team_value = view.me.teamValue or view.me.team.teamValue
     today = view.now.astimezone(view.tz).date()
     d1, d3 = history.change(today, 1), history.change(today, 3)
+    view.change_3d = d3
     days = len(history.days())
     sections = [
         _header(view, team_value),
@@ -455,6 +507,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
         _market(view, team_value, d1, d3),
         _clauses(view),
         _exposure(view),
+        _selling(view),
         _movers(view, history, days),
         _rival_moves(view),
     ]

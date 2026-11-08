@@ -90,11 +90,12 @@ class Settings(BaseSettings):
     refresh_token_warn_days: float = 3.0
     request_delay: float = 0.5  # pause between health-check calls (API rate-limits)
     timezone: str = "Europe/Madrid"  # how times are shown; LaLiga's own clock by default
+    earn_per_point: int = 100_000  # paid per point after each jornada (rivals' cash estimates)
 
     # Acting from Telegram (see README, "Acting from Telegram"). Off unless switched on;
     # with dry_run still on, confirmed actions are only simulated.
     actions: bool = False
-    action_kinds: str = "lineup,bid,steal,raise"
+    action_kinds: str = "lineup,bid,steal,raise,sell,accept,decline,withdraw"
     action_max_money: int = 20_000_000  # per action: a bid, a clause, a raise's cost
     action_daily_limit: int = 5  # real (not dry-run) actions per day
     confirm_seconds: int = 120  # how long a Confirm button stays valid

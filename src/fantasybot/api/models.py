@@ -317,11 +317,17 @@ class MarketItem(ApiModel):
 
 
 class Offer(ApiModel):
+    """An offer for one of your players. No bidderTeam: it comes from the market itself."""
+
     id: Id
     money: int | None = None
-    status: str | None = None
+    status: str | None = None  # "pending" until you accept or decline
     expirationDate: str | None = None
     bidderTeam: TeamRef | None = None
+
+    @property
+    def open(self) -> bool:
+        return (self.status or "pending").lower() == "pending"
 
 
 class ShieldCheck(ApiModel):

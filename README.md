@@ -145,6 +145,7 @@ in its container.
 | `./fb logs` | The daily run's log |
 | `./fb listen start` / `stop` | The listener for Telegram buttons (see [Acting from Telegram](#acting-from-telegram)) |
 | `./fb actions log` | Every confirmed action, simulated or real |
+| `./fb cash-check` | What the rivals' cash estimate is built from |
 | `./fb help` | Everything else |
 
 To update to a newer version:
@@ -218,6 +219,11 @@ acting on today:
 - **Your exposure.** Your players any rival could take right now, which
   rivals can afford each one, and which two to shield. Shielding is free, lasts 24h without Premium, and you do it
   in the app. Raising a clause costs half the increase.
+- **Selling.** Your listings and every offer on your players, listed or not,
+  best offer first, compared with value. Listings you should take back (he's
+  now worth more than the asking price, or he's in your best XI). Bench
+  players worth selling: to cover a negative balance, falling in value,
+  injured, or hardly scoring.
 - **Price moves.** Your players' and the league's biggest risers and fallers
   since yesterday. LaLiga's API only gives today's values, so the bot keeps
   its own history; trends appear from the second day.
@@ -244,18 +250,29 @@ Lineups use next jornada's fixture. Market, clause and exposure picks use
 the average over the next three jornadas (shown as "xP/j"), because you keep
 a player for weeks. The model doesn't know about probable lineups yet.
 
-**Rivals' cash** is hidden by the API, so it's estimated from the league
-activity feed:
+**Rivals' cash** is hidden by the API, so it's estimated the way people do
+it by hand:
 
-- Each manager's purchases, sales, clause steals and jornada payouts are
-  added up. A clause steal pays the clause to the player's owner.
-- What the feed can't see (starting budget, daily rewards, clause raises) is
-  worked out from your own team, your real cash minus your own feed total,
-  and assumed to be the same for everyone.
-- If that unexplained part jumps by more than 2M overnight, the estimates
-  are marked "uncertain today".
+```
+starting budget − purchases + sales + 100,000 € × season points
+```
 
-The full feed is read once, then only new entries each day.
+- **Jornada earnings** come from the standings (100,000 € per point,
+  `FANTASYBOT_EARN_PER_POINT`), not from the feed, which may only show your
+  own payouts.
+- **Purchases, sales and clause steals** come from the league activity feed.
+  When one manager buys from another, the seller is credited too. A clause
+  steal pays the player's owner.
+- **What neither source shows** (starting budget, daily rewards, clause
+  raises) is worked out from your own team, where the real cash is known, and
+  assumed to be the same for everyone.
+
+Nobody can be more in debt than 20% of their team value, so if an estimate
+comes out below that, the briefing says the numbers don't add up and doesn't
+use them. `./fb cash-check` shows the full breakdown per manager. If the
+unexplained part jumps by more than 2M overnight, the estimates are marked
+"uncertain today". The full feed is read once, then only new entries each
+day.
 
 **The kickoff guard** runs every hour and stays silent unless the jornada
 starts within 24h and something would cost you points. It alerts once when it
@@ -286,8 +303,31 @@ The briefing can end with buttons for the actions it suggests:
 - **Steal a rival's player** by paying his clause.
 - **Raise one of your clauses:** enough to put him out of reach of everyone's
   estimated cash, or +25%.
+- **List a player for sale:** at value, +5% or +10%. Nothing is sold until
+  you accept an offer.
+- **Accept or decline an offer.** Accepting can't be undone, so the first real
+  one asks twice like everything else.
+- **Withdraw a listing**, when there's a reason to.
 
-Shielding isn't offered: the API call for it claims you watched an ad.
+When the kickoff guard warns that a negative balance would cost you the
+jornada, it also offers sell buttons for the bench players that would cover
+it. Shielding isn't offered: the API call for it claims you watched an ad.
+
+**Should you keep everyone listed to collect offers?** Mostly no:
+
+- **You don't need to list a player to get offers.** Rivals can already make
+  direct offers on any of your players, and the briefing shows those too.
+- **What listing adds** is a place in the market list and, according to
+  guides, LaLiga's own offer near market value. That's a fair-price exit, not
+  a profit.
+- **It shows your hand.** Friends see who you're willing to give up, and when
+  you're short of cash.
+- **Listings expire,** so "always listed" means relisting every day.
+
+What does make sense is a shop window: list bench players you'd genuinely let
+go at +5–10% over value. If someone overpays, you gain; if not, you've lost
+nothing. Check in the app whether listing has any limits or side effects;
+the bot can't see that.
 
 It's off unless you switch it on, and even then **nothing reaches LaLiga
 until you turn off dry run**:
@@ -397,7 +437,8 @@ as unset.
 | `FANTASYBOT_REQUEST_DELAY` | `0.5` | seconds between API calls in the health check and briefing |
 | `FANTASYBOT_TIMEZONE` | `Europe/Madrid` | timezone for times in the briefing and alerts |
 | `FANTASYBOT_ACTIONS` | `off` | `on` offers action buttons on Telegram (needs `./fb listen start`) |
-| `FANTASYBOT_ACTION_KINDS` | `lineup,bid,steal,raise` | which actions to offer |
+| `FANTASYBOT_ACTION_KINDS` | `lineup,bid,steal,raise,sell,accept,decline,withdraw` | which actions to offer |
+| `FANTASYBOT_EARN_PER_POINT` | `100000` | money per point after each jornada (rivals' cash) |
 | `FANTASYBOT_ACTION_MAX_MONEY` | `20000000` | the most one real action may spend |
 | `FANTASYBOT_ACTION_DAILY_LIMIT` | `5` | real actions allowed per day |
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |

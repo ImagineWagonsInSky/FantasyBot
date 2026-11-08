@@ -406,3 +406,45 @@ async def test_cash_estimates_flag_unexplained_jumps(league, scout_client, setti
     text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
                                         sleep=no_sleep))
     assert "Rivals' cash ≈ Ana 20.00M · Bea 7.00M · Carl 26.00M (uncertain today)" in text
+
+
+# -- selling -------------------------------------------------------------------
+
+
+async def test_selling_section(league, scout_client, settings, alerter, seeded_store):
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    selling = text.split("💸 Selling")[1].split("📈")[0]
+    lines = [line.strip() for line in selling.strip().splitlines()]
+    # Best offers first: Carl's direct offer for unlisted Mid A, then your listing.
+    assert lines[0] == "• Mid A · not listed (value 10.00M) · best offer 12.00M from Carl (+20% vs value)"
+    assert lines[1].startswith("• Fwd B · listed 6.50M (value 6.00M) · closes Sun 15 Nov 10:00")
+    assert lines[1].endswith("best offer 6.60M from Ana (+10% vs value)")  # beats the market's 6.1M
+    assert "↩ think about withdrawing: he's in your best XI" in lines[2]
+    assert "• Hurt (DEF) · value 8.00M · injured" in selling
+    assert "• Backup (GK) · value 1.00M · hardly scores" in selling
+
+
+async def test_negative_balance_puts_covering_sales_first(league, scout_client, settings, alerter,
+                                                          seeded_store):
+    league.data["team_money"] = {"teamMoney": -500_000}
+    text = "\n".join(await run_briefing(scout_client, settings, alerter, now=NOW, send=False,
+                                        sleep=no_sleep))
+    worth = text.split("Worth selling")[1].split("📈")[0]
+    assert worth.strip().splitlines()[1].endswith("covers your negative balance")
+
+
+def test_withdraw_when_listed_below_current_value():
+    from fantasybot.scout.selling import OnSale, should_withdraw
+
+    def squad_player(value):
+        from fantasybot.scout.analysis import SquadPlayer
+        from fantasybot.scout.model import project
+
+        p = Player.model_validate({"id": "X", "nickname": "X", "marketValue": value, "averagePoints": 3})
+        return SquadPlayer(p, "PTX", value, None, False, project(p))
+
+    cheap = OnSale("PTX", squad_player(9_000_000), "M9", 8_000_000, None)
+    assert should_withdraw(cheap, []) == "listed at 8.00M but now worth 9.00M"
+    fair = OnSale("PTX", squad_player(8_000_000), "M9", 8_500_000, None)
+    assert should_withdraw(fair, []) is None

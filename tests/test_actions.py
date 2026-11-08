@@ -326,3 +326,94 @@ def test_listen_refuses_when_actions_are_off(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FANTASYBOT_TOKEN_KEY", Fernet.generate_key().decode())
     assert main(["listen", "--once"]) == 2
     assert "FANTASYBOT_ACTIONS=on" in capsys.readouterr().err
+
+
+# -- selling ---------------------------------------------------------------------
+
+
+async def test_selling_buttons(act):
+    await act.offer()
+    offered = labels(act.tg)
+    assert "✅ Sell Mid A to Carl · 12.00M" in offered
+    assert "✖ Decline Carl's 12.00M for Mid A" in offered
+    assert "✅ Sell Fwd B to Ana · 6.60M" in offered
+    assert "↩ Withdraw Fwd B (he's in your best XI)" in offered
+    assert {"💸 List Hurt 8.00M", "8.40M", "8.80M"} <= set(offered)
+    assert all(len(b.encode()) <= 64 for b in act.tg.buttons().values())  # Telegram's limit
+
+
+async def test_accept_decline_sell_withdraw_requests(act):
+    await act.offer()
+    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    assert "Sell Mid A to Carl for 12.00M (value 10.00M). He leaves your squad." in act.tg.text
+    assert "Cash 4.00M → 16.00M." in act.tg.text
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert f"POST {C1.removeprefix('/api')}/league/L1/market/MK30/offer/O2/accept\n" \
+           '{"offerMoney": 12000000}' in act.tg.text
+
+    await act.tap("✖ Decline Ana's 6.60M for Fwd B", index=0)
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.endswith("POST /v1/competition/1/league/L1/market/M4/offer/O1/reject\n(no body)")
+
+    await act.tap("💸 List Hurt 8.00M", index=0)
+    assert "List Hurt for 8.00M (value 8.00M)" in act.tg.text and "nothing is sold until" in act.tg.text
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert '/market/sell\n{"playerId": "PT20", "salePrice": 8000000}' in act.tg.text
+
+    await act.tap("↩ Withdraw Fwd B (he's in your best XI)", index=0)
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.endswith("DELETE /v1/competition/1/league/L1/market/M4/delete\n(no body)")
+    assert act.fake.writes == []
+
+
+async def test_offer_changes_and_relisting_are_refused(act):
+    await act.offer()
+    act.fake.data["player_offer_by_id"]["PT30"][0]["money"] = 11_000_000
+    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    assert act.tg.text == "✋ Carl's offer changed to 11.00M; the next briefing will show it."
+    act.fake.data["player_offer_by_id"]["PT30"] = []
+    await act.tap("✅ Sell Mid A to Carl · 12.00M", index=0)
+    assert act.tg.text == "✋ Carl's offer for Mid A isn't open any more."
+    # Fwd B is already listed: listing him again is refused.
+    from fantasybot.actions.core import sell_suggestion
+    from fantasybot.scout.briefing import gather as gather_view
+
+    async def no_sleep(_):
+        return None
+
+    view = await gather_view(act.client, act.settings, NOW, sleep=no_sleep)
+    fwd_b = next(p for p in view.my_squad if p.name == "Fwd B")
+    await act.center.offer_suggestions([sell_suggestion(view, fwd_b, "test", NOW)], "test")
+    await act.tap("💸 List Fwd B 6.00M")
+    assert act.tg.text == "✋ Fwd B is already on the market."
+
+
+async def test_first_real_sale_asks_twice(act):
+    act.settings.dry_run = False
+    await act.offer()
+    await act.tap("✅ Sell Mid A to Carl · 12.00M")
+    await act.tap(act.tg.buttons()["✅ Confirm"])
+    assert act.tg.text.startswith("This would be your first real sale (accepting an offer) through")
+    await act.tap(act.tg.buttons()["Yes, do it"])
+    (sent,) = act.fake.writes
+    assert sent.url.path == f"{C1}/league/L1/market/MK30/offer/O2/accept"
+    assert json.loads(sent.content) == {"offerMoney": 12_000_000}
+
+
+async def test_kickoff_guard_offers_sell_buttons_for_a_negative_balance(act):
+    from fantasybot.scout.guard import guard_check
+
+    async def no_sleep(_):
+        return None
+
+    act.fake.data["team_money"] = {"teamMoney": -1_500_000}
+
+    class Quiet:
+        async def send(self, text):
+            return True
+
+    result = await guard_check(act.client, act.settings, Quiet(), now=NOW, sleep=no_sleep)
+    assert result.message and result.to_sell
+    assert await act.center.offer_sales(result.view, result.to_sell) == len(result.to_sell)
+    assert act.tg.text.startswith("List one of these to get back above 0?")
+    assert any(label.startswith("💸 List ") for label in labels(act.tg))

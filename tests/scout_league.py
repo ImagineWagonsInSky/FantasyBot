@@ -82,7 +82,10 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
         owned("PT22", player("P22", "Def B", DEF, 3, 3, recent=[3, 3, 3], club="7")),
         owned("PT23", player("P23", "Def C", DEF, 2, 2.5, recent=[2, 3, 2], club="9")),
         owned("PT24", player("P24", "Def D", DEF, 6, 5, recent=[6, 5, 7])),
-        owned("PT30", player("P30", "Mid A", MID, 10, 6, recent=[6, 7, 6]), locked=NOW + timedelta(days=9)),
+        {**owned("PT30", player("P30", "Mid A", MID, 10, 6, recent=[6, 7, 6]),
+                 locked=NOW + timedelta(days=9)),
+         # a direct offer on a player you haven't listed
+         "playerMarket": {"id": "MK30", "numberOfOffers": 1, "directOffer": True}},
         owned("PT31", player("P31", "Mid B", MID, 5, 4, recent=[4, 4, 4], club="5")),
         owned("PT32", player("P32", "Mid C", MID, 3, 3, recent=[3, 2, 4], club="7")),
         owned("PT33", player("P33", "Mid D", MID, 2, 2, recent=[1, 2, 2], club="11")),
@@ -112,6 +115,7 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
          "expirationDate": "2026-11-14T13:20:00+01:00",
          "playerMaster": player("P92", "Crocked", MID, 1, 6, status="injured")},
         {"id": "M4", "discr": "marketPlayerTeam", "salePrice": 6_500_000, "sellerTeam": {"id": "T1"},
+         "numberOfOffers": 1, "expirationDate": "2026-11-15T10:00:00+01:00",
          "playerMaster": {k: v for k, v in PLAYERS["P41"].items() if k != "playerStats"},
          "playerTeam": {"playerTeamId": "PT41"}},
         {"id": "M5", "discr": "marketPlayerTeam", "salePrice": 10_000_000, "sellerTeam": {"id": "T3"},
@@ -143,12 +147,22 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
         "market": market,
         "players": list(PLAYERS.values()),
         "player_details_by_id": {pid: {"playerMaster": p} for pid, p in PLAYERS.items()},
+        # Your listed Fwd B: the market offers 6.1M, Ana 6.6M. Unlisted Mid A: Carl offers 12M.
+        "player_offer_by_id": {
+            "PT41": [{"id": "O0", "money": 6_100_000, "status": "pending"},
+                     {"id": "O1", "money": 6_600_000, "status": "pending", "bidderTeam": {"id": "T2"}}],
+            "PT30": [{"id": "O2", "money": 12_000_000, "status": "pending", "bidderTeam": {"id": "T4"}}],
+        },
         "matchday_by_week": schedule(),
         "teams_master": [{"id": c, "name": f"Club {c}", "shortName": f"C{c}"}
                          for c in ("3", "5", "7", "9", "11")],
-        # Two pages and then an empty one. Known answers (see test_scout):
-        # you -6M in the feed vs 4M real cash -> 10M unexplained;
-        # Ana +5M -> 15M, Bea -8M -> 2M, Carl +12M -1M -> 21M.
+        # Two pages and then an empty one. Known answers (see test_scout), with a 100M
+        # starting budget and 100k per point (you 900 pts, Ana 1100, Bea 1000, Carl 800):
+        #   you:  4M real cash = 100M + 90M - 189M + 3M     (feed -186M)
+        #   Ana:  100M + 110M - 12M (clause) + 15M - 198M = 15M
+        #   Bea:  100M + 100M - 193M - 5M (bought from Carl) = 2M
+        #   Carl: 100M + 80M - 176M + 12M (clause) + 5M (sold to Bea) = 21M
+        # Jornada payouts in the feed (type 6) are ignored: earnings come from points.
         "league_activity_pages": [
             {"elements": [
                 {"id": "A1", "activityTypeId": 32, "createdAt": iso(NOW - timedelta(hours=1)),
@@ -161,15 +175,19 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
                 {"id": "A3", "activityTypeId": 33, "createdAt": iso(NOW - timedelta(days=3)),
                  "user1Id": 202, "amount": 15_000_000, "playerName": "Sold one"},
                 {"id": "A4", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=4)),
-                 "user1Id": 101, "amount": 10_000_000, "playerName": "Old news"},
+                 "user1Id": 101, "amount": 189_000_000, "playerName": "Old news"},
                 {"id": "A5", "activityTypeId": 33, "createdAt": iso(NOW - timedelta(days=5)),
                  "user1Id": 101, "amount": 3_000_000},
                 {"id": "A6", "activityTypeId": 6, "createdAt": iso(NOW - timedelta(days=6)),
                  "user1Id": 101, "amount": 1_000_000},
                 {"id": "A7", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=7)),
-                 "user1Id": 303, "amount": 8_000_000},
+                 "user1Id": 303, "amount": 193_000_000},
                 {"id": "A8", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=8)),
-                 "user1Id": 404, "amount": 1_000_000},
+                 "user1Id": 404, "amount": 176_000_000},
+                {"id": "A9", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=9)),
+                 "user1Id": 202, "amount": 198_000_000},
+                {"id": "A10", "activityTypeId": 1, "createdAt": iso(NOW - timedelta(days=10)),
+                 "user1Id": 303, "user2Id": 404, "amount": 5_000_000, "playerMasterId": "P99"},
             ]},
         ],
     })

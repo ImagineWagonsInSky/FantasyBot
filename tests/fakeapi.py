@@ -142,6 +142,8 @@ class FakeLaLiga:
             body = self.data["team_data_by_id"].get(segments[segments.index("teams") + 1], body)
         if name == "player_details" and "player_details_by_id" in self.data:
             body = self.data["player_details_by_id"].get(segments[segments.index("player") + 1], body)
+        if name == "player_offer" and "player_offer_by_id" in self.data:
+            body = self.data["player_offer_by_id"].get(segments[segments.index("playerTeam") + 1], [])
         if name == "league_activity" and "league_activity_pages" in self.data:
             pages = self.data["league_activity_pages"]
             index = int(segments[-1])

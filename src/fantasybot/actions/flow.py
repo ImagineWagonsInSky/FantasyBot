@@ -17,9 +17,21 @@ from typing import Any
 from ..api import ApiError, FantasyClient, ResponseShapeError
 from ..auth import AuthUnavailable, WritesFrozen
 from ..config import Settings
+from ..scout.analysis import SquadPlayer
 from ..scout.briefing import BriefingError, LeagueView
 from ..telegram import Button, TelegramBot, TelegramError
-from .core import KIND_NAMES, ActionRefused, Plan, check_limits, describe_request, execute, prepare, suggest
+from .core import (
+    KIND_NAMES,
+    ActionRefused,
+    Plan,
+    Suggestion,
+    check_limits,
+    describe_request,
+    execute,
+    prepare,
+    sell_suggestion,
+    suggest,
+)
 from .store import ActionStore, Confirmation
 
 log = logging.getLogger(__name__)
@@ -62,15 +74,28 @@ class ActionCenter:
 
     async def offer(self, view: LeagueView) -> int:
         """Sends the action buttons for a briefing. Returns how many were offered."""
+        return await self.offer_suggestions(
+            suggest(view, self._settings, self._clock()),
+            "Want to act on any of this? Each button checks LaLiga again and asks before doing anything.")
+
+    async def offer_sales(self, view: LeagueView, players: list[SquadPlayer]) -> int:
+        """Sell buttons for the kickoff guard, when a negative balance would cost the jornada."""
+        if "sell" not in self._settings.enabled_actions():
+            return 0
+        now = self._clock()
+        return await self.offer_suggestions(
+            [sell_suggestion(view, p, "covers your negative balance", now) for p in players],
+            "List one of these to get back above 0? Nothing is sold until you accept an offer.")
+
+    async def offer_suggestions(self, suggestions: list[Suggestion], intro: str) -> int:
         now = self._clock()
         rows = []
-        for s in suggest(view, self._settings, now):
+        for s in suggestions:
             p = self._store.add_proposal(s.kind, s.label, s.params, now, s.expires)
-            rows.append([Button(label, f"p:{p.id}:{i}") for i, label in enumerate(s.params["options"])])
+            rows.append([Button(label[:64], f"p:{p.id}:{i}") for i, label in enumerate(s.params["options"])])
         if not rows:
             return 0
-        await self.say("Want to act on any of this? Each button checks LaLiga again and asks before "
-                       "doing anything.\n" + self._mode_line(), rows)
+        await self.say(f"{intro}\n{self._mode_line()}", rows)
         return len(rows)
 
     # -- updates -----------------------------------------------------------------

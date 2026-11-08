@@ -96,6 +96,7 @@ class SquadPlayer:
     locked_until: datetime | None
     shielded: bool
     projection: Projection
+    market: dict[str, Any] | None = None  # playerMarket: offers on him, listed or not
 
     @property
     def position(self) -> int | None:
@@ -141,6 +142,7 @@ def build_squad(team: TeamData, details: dict[str, Player], current_week: int | 
             locked_until=parse_time(owned.buyoutClauseLockedEndTime),
             shielded=bool(owned.isShielded),
             projection=project(player, current_week, outlook(player) if outlook else NEUTRAL),
+            market=owned.playerMarket if isinstance(owned.playerMarket, dict) else None,
         ))
     return squad
 
