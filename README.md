@@ -223,8 +223,19 @@ ranks above another:
   player didn't play as 0) plus 40% season average.
 - Injured or suspended: 0. Doubt: half.
 - A fit player who didn't play last jornada: ×0.7 (rotation risk).
+- **Fixtures**, rated from this season's results:
+  - attackers gain against defences that concede a lot;
+  - defenders and keepers lose against attacks that score a lot;
+  - coaches follow the strength gap between the two clubs;
+  - home is worth +5%, away −5%.
 
-The model doesn't know about fixtures or probable lineups yet.
+  Early in the season a club's rating is pulled towards average, and each
+  fixture is capped between ×0.75 and ×1.30. A player whose club has no
+  match that jornada is worth 0.
+
+Lineups use next jornada's fixture. Market, clause and exposure picks use
+the average over the next three jornadas (shown as "xP/j"), because you keep
+a player for weeks. The model doesn't know about probable lineups yet.
 
 **The kickoff guard** runs every hour and stays silent unless the jornada
 starts within 24h and something would cost you points. It alerts once when it

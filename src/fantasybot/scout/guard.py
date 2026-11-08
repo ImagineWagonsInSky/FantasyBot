@@ -32,7 +32,7 @@ async def run_guard(client: FantasyClient, settings: Settings, alerter: Alerter,
     """Returns the alert text if one was due (and sent, unless send=False)."""
     now = now or datetime.now(timezone.utc)
     view = await gather(client, settings, now, rivals=False, market=False, details=False,
-                        activity=False, sleep=sleep)
+                        activity=False, results=False, sleep=sleep)
     kickoff = next_kickoff(view.matches, view.week, now)
     if kickoff is None or kickoff.in_progress:
         return None

@@ -132,6 +132,22 @@ def test_readiness_finds_what_costs_points(fake):
     assert any("Rested (FWD) didn't play" in w for w in ready.warnings)
 
 
+def test_a_starter_without_a_match_is_a_problem(fake):
+    from fantasybot.scout.difficulty import FixtureModel, club_records
+
+    scout_league.build(fake)
+    matches = {w: _matches(fake, str(w)) for w in (12, 13, 14)}
+    past = [m for w in range(1, 12) for m in _matches(fake, str(w))]
+    model = FixtureModel(club_records(past, NOW), matches, 12, {})
+    team = TeamData.model_validate(fake.data["team_data_by_id"]["T1"])
+    squad = build_squad(team, {}, 12, model.outlook)
+    current = read_lineup(Lineup.model_validate(fake.data["current_lineup"]), squad)
+    ready = assess_readiness(100, current, squad, None)
+    assert "Mid D (MID) has no match this jornada but is in your lineup." in ready.problems
+    mid_d = next(p for p in squad if p.name == "Mid D")
+    assert mid_d.expected == 0 and mid_d.outlook > 0  # he plays in later jornadas
+
+
 def test_a_sold_player_left_in_the_lineup_is_flagged(fake):
     scout_league.build(fake)
     fake.data["current_lineup"]["formation"]["striker"] = [{"playerTeamId": "SOLD"}]
@@ -219,7 +235,9 @@ async def test_briefing_end_to_end(league, scout_client, settings, alerter, seed
     # Readiness and lineup
     assert "Not ready (jornada 12 starts Sat 14 Nov 21:00)" in text
     assert "Hurt (DEF) is injured but in your lineup." in text
+    assert "Mid D (MID) has no match this jornada" in text
     assert "Out: Hurt" in text and "Def D" in text.split("In:")[1]
+    assert "Isco MID · 1.20M · 3.0 xP/j · next vs C7 (a)" in text
     # Market: own listing excluded, injured filtered, affordability flags
     market = text.split("🛒")[1].split("🎯")[0]
     assert "closes Sat 14 Nov 13:20" in market
@@ -301,8 +319,11 @@ async def test_guard_is_quiet_when_ready_or_far_away(league, scout_client, setti
     # Far from kickoff: quiet even with problems.
     assert await run_guard(scout_client, settings, alerter, now=NOW - timedelta(days=2),
                            sleep=no_sleep) is None
-    # Ready: fix the lineup, positive balance.
+    # Ready: swap out the injured defender, and move Mid D to a club that plays.
     league.data["current_lineup"]["formation"]["defender"][0] = {"playerTeamId": "PT24"}
+    for owned in league.data["team_data_by_id"]["T1"]["players"]:
+        if owned["playerTeamId"] == "PT33":
+            owned["playerMaster"]["teamId"] = "5"
     assert await run_guard(scout_client, settings, alerter, now=NOW, sleep=no_sleep) is None
     assert alerter.messages == []
 

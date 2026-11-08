@@ -40,12 +40,26 @@ def position_label(player: Player) -> str:
 
 
 @dataclass(frozen=True)
+class FixtureOutlook:
+    """How a player's upcoming matches scale his points (see difficulty.py)."""
+
+    next_factor: float = 1.0  # next jornada; 0 when his club doesn't play
+    next_label: str = ""  # e.g. "vs RMA (h)", or "no match"
+    horizon_factor: float = 1.0  # average over the next few jornadas
+
+
+NEUTRAL = FixtureOutlook()
+
+
+@dataclass(frozen=True)
 class Projection:
-    expected: float
+    expected: float  # next jornada, fixture included: what the lineup uses
+    outlook: float  # per jornada over the next few, fixtures included: buying and keeping
     season_average: float
     form: float | None  # average of the last RECENT_JORNADAS completed jornadas
     availability: float
     note: str  # why it's discounted, e.g. "injured", "didn't play last jornada"
+    fixture: str = ""  # next opponent, e.g. "vs RMA (h)"
 
 
 def completed_weeks(player: Player, current_week: int | None) -> list[PlayerWeek]:
@@ -54,7 +68,8 @@ def completed_weeks(player: Player, current_week: int | None) -> list[PlayerWeek
     return sorted(weeks, key=lambda w: w.weekNumber or 0)
 
 
-def project(player: Player, current_week: int | None = None) -> Projection:
+def project(player: Player, current_week: int | None = None,
+            fixtures: FixtureOutlook = NEUTRAL) -> Projection:
     status = (player.playerStatus or "ok").lower()
     availability = STATUS_AVAILABILITY.get(status, UNKNOWN_STATUS_AVAILABILITY)
     note = "" if status == "ok" else status
@@ -69,5 +84,9 @@ def project(player: Player, current_week: int | None = None) -> Projection:
     if status == "ok" and weeks and position_of(player) != COACH and weeks[-1].minutes == 0:
         factor *= DID_NOT_PLAY_FACTOR
         note = "didn't play last jornada"
-    return Projection(round(factor * base, 2), round(season, 2),
-                      round(form, 2) if form is not None else None, availability, note)
+    if fixtures.next_factor == 0 and not note:
+        note = "no match this jornada"
+    points = factor * base
+    return Projection(round(points * fixtures.next_factor, 2), round(points * fixtures.horizon_factor, 2),
+                      round(season, 2), round(form, 2) if form is not None else None, availability,
+                      note, fixtures.next_label)

@@ -32,9 +32,9 @@ PLAYERS: dict[str, dict] = {}
 
 
 def player(pid: str, name: str, pos: int, value: float, avg: float, status: str = "ok",
-           recent: list[int] | None = None, minutes: list[int] | None = None) -> dict:
+           recent: list[int] | None = None, minutes: list[int] | None = None, club: str = "3") -> dict:
     record = {"id": pid, "nickname": name, "positionId": pos, "marketValue": int(value * 1_000_000),
-              "averagePoints": avg, "points": round(avg * 11), "playerStatus": status, "teamId": "3"}
+              "averagePoints": avg, "points": round(avg * 11), "playerStatus": status, "teamId": club}
     if recent:
         record["playerStats"] = weeks(recent, minutes)
     PLAYERS[pid] = record
@@ -50,23 +50,46 @@ def owned(pt: str, p: dict, *, clause: float | None = None, locked: datetime | N
             "isShielded": shielded}
 
 
+def schedule() -> dict[str, list[dict]]:
+    """Jornadas 1-11 played: club 5 concedes 3 a match, club 7 scores 3. Jornada 12
+    starts at KICKOFF; club 11 (newly promoted) has no match in it."""
+    weeks: dict[str, list[dict]] = {}
+    for w in range(1, 12):
+        day = NOW - timedelta(days=7 * (12 - w))
+        flip = w % 2 == 0
+        weeks[str(w)] = [
+            {"id": f"R{w}a", "localId": "5" if flip else "3", "visitorId": "3" if flip else "5",
+             "localScore": 2 if flip else 3, "visitorScore": 3 if flip else 2, "matchDate": iso(day)},
+            {"id": f"R{w}b", "localId": "9" if flip else "7", "visitorId": "7" if flip else "9",
+             "localScore": 1 if flip else 3, "visitorScore": 3 if flip else 1, "matchDate": iso(day)},
+        ]
+    weeks["12"] = [{"id": "G1", "localId": "3", "visitorId": "5", "matchDate": KICKOFF},
+                   {"id": "G2", "localId": "7", "visitorId": "9", "matchDate": "2026-11-15T18:30:00+01:00"}]
+    weeks["13"] = [{"id": "G3", "localId": "5", "visitorId": "3", "matchDate": "2026-11-21T21:00:00+01:00"},
+                   {"id": "G4", "localId": "9", "visitorId": "11", "matchDate": "2026-11-22T18:30:00+01:00"}]
+    weeks["14"] = [{"id": "G5", "localId": "3", "visitorId": "7", "matchDate": "2026-11-28T21:00:00+01:00"},
+                   {"id": "G6", "localId": "11", "visitorId": "5", "matchDate": "2026-11-29T18:30:00+01:00"}]
+    return weeks
+
+
 def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
     PLAYERS.clear()
     my_squad = [
         owned("PT10", player("P10", "Keeper", GK, 5, 4, recent=[5, 4, 6]), shielded=True),
         owned("PT11", player("P11", "Backup", GK, 1, 1, recent=[0, 0, 0], minutes=[0, 0, 0])),
         owned("PT20", player("P20", "Hurt", DEF, 8, 6, status="injured", recent=[7, 6, 8])),
-        owned("PT21", player("P21", "Def A", DEF, 4, 4, recent=[4, 3, 5])),
-        owned("PT22", player("P22", "Def B", DEF, 3, 3, recent=[3, 3, 3])),
-        owned("PT23", player("P23", "Def C", DEF, 2, 2.5, recent=[2, 3, 2])),
+        owned("PT21", player("P21", "Def A", DEF, 4, 4, recent=[4, 3, 5], club="5")),
+        owned("PT22", player("P22", "Def B", DEF, 3, 3, recent=[3, 3, 3], club="7")),
+        owned("PT23", player("P23", "Def C", DEF, 2, 2.5, recent=[2, 3, 2], club="9")),
         owned("PT24", player("P24", "Def D", DEF, 6, 5, recent=[6, 5, 7])),
         owned("PT30", player("P30", "Mid A", MID, 10, 6, recent=[6, 7, 6]), locked=NOW + timedelta(days=9)),
-        owned("PT31", player("P31", "Mid B", MID, 5, 4, recent=[4, 4, 4])),
-        owned("PT32", player("P32", "Mid C", MID, 3, 3, recent=[3, 2, 4])),
-        owned("PT33", player("P33", "Mid D", MID, 2, 2, recent=[1, 2, 2])),
+        owned("PT31", player("P31", "Mid B", MID, 5, 4, recent=[4, 4, 4], club="5")),
+        owned("PT32", player("P32", "Mid C", MID, 3, 3, recent=[3, 2, 4], club="7")),
+        owned("PT33", player("P33", "Mid D", MID, 2, 2, recent=[1, 2, 2], club="11")),
         owned("PT40", player("P40", "Fwd A", FWD, 20, 7, recent=[8, 6, 9])),
-        owned("PT41", player("P41", "Fwd B", FWD, 6, 4, recent=[5, 4, 4])),
-        owned("PT42", player("P42", "Rested", FWD, 7, 5, recent=[5, 6, 0], minutes=[90, 90, 0])),
+        owned("PT41", player("P41", "Fwd B", FWD, 6, 4, recent=[5, 4, 4], club="5")),
+        owned("PT42", player("P42", "Rested", FWD, 7, 5, recent=[5, 6, 0], minutes=[90, 90, 0],
+                              club="7")),
         owned("PT50", player("P50", "Coach", COACH, 1, 3, recent=[3, 3, 3])),
     ]
     ana = [
@@ -82,7 +105,7 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
     market = [
         {"id": "M1", "discr": "marketPlayerLeague", "salePrice": 1_200_000, "numberOfBids": 2,
          "expirationDate": "2026-11-14T13:20:00+01:00",
-         "playerMaster": player("P90", "Isco", MID, 1.2, 5, recent=[5, 6, 4])},
+         "playerMaster": player("P90", "Isco", MID, 1.2, 5, recent=[5, 6, 4], club="9")},
         {"id": "M2", "discr": "marketPlayerLeague", "salePrice": 40_000_000,
          "expirationDate": "2026-11-14T13:20:00+01:00", "playerMaster": player("P91", "Pricey", FWD, 40, 7)},
         {"id": "M3", "discr": "marketPlayerLeague", "salePrice": 1_000_000,
@@ -92,7 +115,8 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
          "playerMaster": {k: v for k, v in PLAYERS["P41"].items() if k != "playerStats"},
          "playerTeam": {"playerTeamId": "PT41"}},
         {"id": "M5", "discr": "marketPlayerTeam", "salePrice": 10_000_000, "sellerTeam": {"id": "T3"},
-         "playerMaster": player("P72", "Listed", DEF, 10, 4), "playerTeam": {"playerTeamId": "PT72"}},
+         "playerMaster": player("P72", "Listed", DEF, 10, 4, club="7"),
+         "playerTeam": {"playerTeamId": "PT72"}},
     ]
 
     def row(team: str, manager: int, name: str, points: int, value: float) -> dict:
@@ -119,11 +143,9 @@ def build(fake: FakeLaLiga, *, balance: int = 4_000_000) -> FakeLaLiga:
         "market": market,
         "players": list(PLAYERS.values()),
         "player_details_by_id": {pid: {"playerMaster": p} for pid, p in PLAYERS.items()},
-        "matchday_by_week": {
-            "12": [{"id": "G1", "localId": "3", "visitorId": "5", "matchDate": KICKOFF},
-                   {"id": "G2", "localId": "5", "visitorId": "3", "matchDate": "2026-11-15T18:30:00+01:00"}],
-            "13": [{"id": "G3", "localId": "3", "visitorId": "5", "matchDate": "2026-11-21T21:00:00+01:00"}],
-        },
+        "matchday_by_week": schedule(),
+        "teams_master": [{"id": c, "name": f"Club {c}", "shortName": f"C{c}"}
+                         for c in ("3", "5", "7", "9", "11")],
         "league_activity": {"elements": [
             {"activityTypeId": 32, "createdAt": iso(NOW - timedelta(hours=1)),
              "description": "Ana clausuló a Fwd X por 12.000.000"},

@@ -37,8 +37,9 @@ from .analysis import (
     read_lineup,
     sell_to_cover,
 )
+from .difficulty import HORIZON, FixtureModel, club_records
 from .history import PriceHistory
-from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, position_label
+from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -71,6 +72,10 @@ class LeagueView:
     activity: list[ActivityEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     tz: tzinfo = timezone.utc
+    fixtures: FixtureModel | None = None
+
+    def outlook_fn(self) -> Callable[[Player], FixtureOutlook] | None:
+        return self.fixtures.outlook if self.fixtures else None
 
     def when(self, dt: datetime | None) -> str:
         return when(dt, self.tz)
@@ -98,7 +103,12 @@ def _describe(exc: Exception) -> str:
 
 async def gather(client: FantasyClient, settings: Settings, now: datetime, *, rivals: bool = True,
                  market: bool = True, details: bool = True, activity: bool = True,
+                 results: bool = True,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> LeagueView:
+    """Everything the briefing (or, with most flags off, the guard) needs.
+
+    results=False uses only match results cached by earlier runs, so the
+    hourly guard stays cheap."""
     errors: list[str] = []
 
     async def fetch(label: str, call: Callable[[], Awaitable[T]], default: T) -> T:
@@ -139,8 +149,26 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
                                        lambda: client.get_team_money(view.my_team_id), None), "amount", None)
     view.lineup = await fetch("your lineup", lambda: client.get_current_lineup(view.my_team_id), None)
     if week is not None:
-        for w in (week, week + 1):
+        for w in range(week, week + HORIZON):
             view.matches[w] = await fetch(f"jornada {w} fixtures", lambda w=w: client.get_matchday(w), [])
+    names: dict[str, str] = {}
+    if results:
+        clubs = await fetch("club names", client.get_teams_master, [])
+        names = {str(c.id): c.shortName or c.name or str(c.id) for c in clubs}
+    with PriceHistory(settings.state_dir / "history.sqlite") as store:
+        if results and week is not None:
+            finished = store.finished_weeks()
+            for w in range(1, week):
+                if w not in finished:
+                    past = await fetch(f"jornada {w} results", lambda w=w: client.get_matchday(w), None)
+                    if past is not None:
+                        store.store_results(w, past)
+        for w, played in view.matches.items():
+            store.store_results(w, played)
+        known_results = store.results()
+    kickoff = next_kickoff(view.matches, week, now)
+    view.fixtures = FixtureModel(club_records(known_results, now), view.matches,
+                                 kickoff.jornada if kickoff else week, names)
     view.formations = parse_formations(await fetch("formations", client.get_free_formations, []))
     if market:
         view.market = await fetch("market", lambda: client.get_market(league_id), [])
@@ -161,7 +189,7 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
 
     for team_id, data in team_data.items():
         if data is not None:
-            view.squads[team_id] = build_squad(data, view.details, week)
+            view.squads[team_id] = build_squad(data, view.details, week, view.outlook_fn())
     return view
 
 
@@ -181,7 +209,11 @@ def _arrow(delta: int | None) -> str:
 
 
 def _names(players: list[SquadPlayer]) -> str:
-    return ", ".join(f"{p.name} ({p.expected:.1f})" for p in players) or "-"
+    def one(p: SquadPlayer) -> str:
+        fixture = f", {p.projection.fixture}" if p.projection.fixture else ""
+        return f"{p.name} ({p.expected:.1f}{fixture})"
+
+    return ", ".join(one(p) for p in players) or "-"
 
 
 def _header(view: LeagueView, team_value: int | None) -> str:
@@ -250,29 +282,31 @@ def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: di
         return "🛒 Market: nothing listed, or it couldn't be loaded."
     limit = credit_limit(view.balance, team_value)
     picks = rank_market(view.market, view.details, view.week, view.balance, limit, d1, d3,
-                        exclude_team=view.me.team.id)
+                        exclude_team=view.me.team.id, outlook=view.outlook_fn())
     closes = min((d for d in (parse_time(i.expirationDate) for i in view.market
                               if i.discr == "marketPlayerLeague") if d), default=None)
-    useful = [p for p in picks if p.projection.expected > 0]
+    useful = [p for p in picks if p.projection.outlook > 0]
     reachable = [p for p in useful if p.payable_cash or p.payable_credit or limit is None]
     lines = [f"🛒 Market{' · closes ' + view.when(closes) if closes else ''} "
-             "(best 5 you can bid on, by expected points)"]
+             "(best 5 you can bid on, by expected points over the next 3 jornadas)"]
     if not reachable:
         lines.append(" • nothing you can bid on right now")
     for n, p in enumerate(reachable[:5], 1):
         flag = "✓" if p.payable_cash else ("⚠ credit" if p.payable_credit else "?")
         form = f" / {p.projection.form:.1f} form" if p.projection.form is not None else ""
+        nxt = f" · next {p.projection.fixture}" if p.projection.fixture else ""
         bids = f" · {p.item.numberOfBids} bids" if p.item.numberOfBids else ""
         seller = " · from a manager" if p.item.discr == "marketPlayerTeam" else ""
         note = f" · {p.projection.note}" if p.projection.note else ""
         lines.append(f" {n}. {p.player.display_name} {position_label(p.player)} · "
-                     f"{money(p.price)} · {p.projection.season_average:.1f} avg{form}"
+                     f"{money(p.price)} · {p.projection.outlook:.1f} xP/j{nxt} · "
+                     f"{p.projection.season_average:.1f} avg{form}"
                      f"{_arrow(p.change_3d)}{bids}{seller}{note} · {flag}")
     lines.append(" ✓ payable from cash · ⚠ needs credit: be back above 0 by kickoff")
     over = [p for p in useful if p not in reachable][:3]
     if over:
         lines.append(" Over your max bid: " + ", ".join(
-            f"{p.player.display_name} ({money(p.price)}, {p.projection.expected:.1f} xP)" for p in over))
+            f"{p.player.display_name} ({money(p.price)}, {p.projection.outlook:.1f} xP/j)" for p in over))
     return "\n".join(lines)
 
 
@@ -283,14 +317,14 @@ def _clauses(view: LeagueView) -> str:
     lines = [f"🎯 Clause steals you can pay now (cash {money(view.balance)}, no debt allowed)"]
     for t in radar.affordable[:5]:
         lines.append(f" • {t.player.label} from {t.rival.name} (#{t.rival.rank}) · clause {money(t.cost)} "
-                     f"(value {money(t.player.value)}) · {t.player.expected:.1f} xP")
+                     f"(value {money(t.player.value)}) · {_xp(t.player)}")
     if not radar.affordable:
         lines.append(" • none right now")
     if radar.unlocking_soon:
         lines.append(" Unlocking within 24h:")
         for t in radar.unlocking_soon[:3]:
             lines.append(f" • {t.player.label} from {t.rival.name} · {view.when(t.player.locked_until)} "
-                         f"· clause {money(t.cost)} · {t.player.expected:.1f} xP")
+                         f"· clause {money(t.cost)} · {_xp(t.player)}")
     if radar.out_of_reach:
         best = radar.out_of_reach[0]
         short = best.cost - (view.balance or 0)
@@ -299,14 +333,18 @@ def _clauses(view: LeagueView) -> str:
     return "\n".join(lines)
 
 
+def _xp(p: SquadPlayer) -> str:
+    nxt = f", next {p.projection.fixture}" if p.projection.fixture else ""
+    return f"{p.outlook:.1f} xP/j{nxt}"
+
+
 def _exposure(view: LeagueView) -> str:
     at_risk = exposed(view.my_squad, view.now)
     if not at_risk:
         return "🛡️ None of your players can be taken by clause right now."
     lines = ["🛡️ Your players any rival can take right now:"]
     for p in at_risk[:5]:
-        lines.append(f" • {p.label} · clause {money(p.clause)} (value {money(p.value)}) · "
-                     f"{p.expected:.1f} xP")
+        lines.append(f" • {p.label} · clause {money(p.clause)} (value {money(p.value)}) · {_xp(p)}")
     top = ", ".join(p.name for p in at_risk[:2])
     lines.append(f" Shield {top} in the app (free, 2 players, 24h). Raising a clause costs half "
                  "the increase: +10M costs 5M.")

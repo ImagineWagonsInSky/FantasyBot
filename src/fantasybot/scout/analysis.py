@@ -12,7 +12,7 @@ Game rules relied on here (see README, "The rules that matter"):
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -27,7 +27,22 @@ from ..api.models import (
     TeamData,
     same_id,
 )
-from .model import COACH, DEF, FWD, GK, MID, Projection, position_label, position_of, project
+from .model import (
+    COACH,
+    DEF,
+    FWD,
+    GK,
+    MID,
+    NEUTRAL,
+    FixtureOutlook,
+    Projection,
+    position_label,
+    position_of,
+    project,
+)
+
+# How a player's upcoming fixtures scale his points (difficulty.FixtureModel.outlook).
+OutlookFn = Callable[[Player], FixtureOutlook]
 
 CREDIT_SHARE = 0.20  # max bid = cash + 20% of team value
 DEFAULT_FORMATIONS: list[tuple[int, int, int]] = [
@@ -100,13 +115,20 @@ class SquadPlayer:
 
     @property
     def expected(self) -> float:
+        """Next jornada, fixture included: what picks a lineup."""
         return self.projection.expected
+
+    @property
+    def outlook(self) -> float:
+        """Per jornada over the next few: what makes a player worth buying or keeping."""
+        return self.projection.outlook
 
     def clause_open(self, now: datetime) -> bool:
         return self.locked_until is None or self.locked_until <= now
 
 
-def build_squad(team: TeamData, details: dict[str, Player], current_week: int | None) -> list[SquadPlayer]:
+def build_squad(team: TeamData, details: dict[str, Player], current_week: int | None,
+                outlook: OutlookFn | None = None) -> list[SquadPlayer]:
     """Squad of a fantasy team; uses the detailed player record (with weekly
     stats) when one was fetched, so recent form counts."""
     squad = []
@@ -118,7 +140,7 @@ def build_squad(team: TeamData, details: dict[str, Player], current_week: int | 
             clause=owned.buyoutClause,
             locked_until=parse_time(owned.buyoutClauseLockedEndTime),
             shielded=bool(owned.isShielded),
-            projection=project(player, current_week),
+            projection=project(player, current_week, outlook(player) if outlook else NEUTRAL),
         ))
     return squad
 
@@ -284,6 +306,8 @@ def assess_readiness(balance: int | None, current: CurrentLineup, squad: list[Sq
         status = (p.player.playerStatus or "ok").lower()
         if status in ("injured", "suspended"):
             r.problems.append(f"{p.label} is {status} but in your lineup.")
+        elif p.projection.note == "no match this jornada":
+            r.problems.append(f"{p.label} has no match this jornada but is in your lineup.")
         elif status == "doubt":
             r.warnings.append(f"{p.label} is a doubt.")
         elif p.projection.note == "didn't play last jornada":
@@ -343,7 +367,7 @@ def clause_radar(rivals: list[Rival], cash: int | None, now: datetime,
     affordable, soon, reach = [], [], []
     for rival in rivals:
         for p in rival.squad:
-            if p.shielded or p.expected <= 0:
+            if p.shielded or p.outlook <= 0:
                 continue
             target = ClauseTarget(rival, p)
             if p.clause_open(now):
@@ -352,7 +376,7 @@ def clause_radar(rivals: list[Rival], cash: int | None, now: datetime,
                 soon.append(target)
 
     def key(t: ClauseTarget) -> tuple[float, int]:
-        return (-t.player.expected, t.cost)
+        return (-t.player.outlook, t.cost)
 
     return ClauseRadar(sorted(affordable, key=key), sorted(soon, key=lambda t: t.player.locked_until),
                        sorted(reach, key=key))
@@ -360,8 +384,8 @@ def clause_radar(rivals: list[Rival], cash: int | None, now: datetime,
 
 def exposed(squad: list[SquadPlayer], now: datetime) -> list[SquadPlayer]:
     """Your players any rival could take right now, most valuable to you first."""
-    return sorted((p for p in squad if p.clause_open(now) and not p.shielded and p.expected > 0),
-                  key=lambda p: -p.expected)
+    return sorted((p for p in squad if p.clause_open(now) and not p.shielded and p.outlook > 0),
+                  key=lambda p: -p.outlook)
 
 
 # -- market --------------------------------------------------------------------
@@ -381,7 +405,8 @@ class MarketPick:
 
 def rank_market(items: list[MarketItem], details: dict[str, Player], current_week: int | None,
                 cash: int | None, credit_limit: int | None, change_1d: dict[str, int],
-                change_3d: dict[str, int], exclude_team: Id | None = None) -> list[MarketPick]:
+                change_3d: dict[str, int], exclude_team: Id | None = None,
+                outlook: OutlookFn | None = None) -> list[MarketPick]:
     picks = []
     for item in items:
         if exclude_team is not None and same_id(item.seller_team_id, exclude_team):
@@ -389,11 +414,12 @@ def rank_market(items: list[MarketItem], details: dict[str, Player], current_wee
         player = details.get(str(item.playerMaster.id), item.playerMaster)
         price = max(item.salePrice or 0, player.marketValue or 0)  # the minimum bid is the value
         pid = str(player.id)
-        picks.append(MarketPick(item, player, project(player, current_week), price,
+        projection = project(player, current_week, outlook(player) if outlook else NEUTRAL)
+        picks.append(MarketPick(item, player, projection, price,
                                 change_1d.get(pid), change_3d.get(pid),
                                 cash is not None and price <= cash,
                                 credit_limit is not None and price <= credit_limit))
-    return sorted(picks, key=lambda p: -p.projection.expected)
+    return sorted(picks, key=lambda p: -p.projection.outlook)
 
 
 def credit_limit(cash: int | None, team_value: int | None) -> int | None:

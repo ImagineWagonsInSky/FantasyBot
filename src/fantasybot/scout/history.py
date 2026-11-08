@@ -1,4 +1,4 @@
-"""Daily price history.
+"""Daily price history, plus a cache of finished match results.
 
 LaLiga's API returns today's market value only, so the bot keeps its own
 history: one row per player per day, in a SQLite file in the state directory
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..api.models import Player
+from ..api.models import Match, Player
 from ..auth.store import ensure_private_dir
 from .model import position_of
 
@@ -28,7 +28,17 @@ CREATE TABLE IF NOT EXISTS snapshots (
     points       REAL,
     status       TEXT,
     PRIMARY KEY (day, player_id)
-)
+);
+CREATE TABLE IF NOT EXISTS results (
+    week          INTEGER NOT NULL,
+    match_id      TEXT    NOT NULL,
+    local_id      TEXT,
+    visitor_id    TEXT,
+    local_score   INTEGER,
+    visitor_score INTEGER,
+    match_date    TEXT,
+    PRIMARY KEY (week, match_id)
+);
 """
 
 
@@ -47,7 +57,7 @@ class PriceHistory:
         self._db = sqlite3.connect(path)
         if created:
             os.chmod(path, 0o600)
-        self._db.execute(_SCHEMA)
+        self._db.executescript(_SCHEMA)
         self._db.commit()
 
     def close(self) -> None:
@@ -93,3 +103,31 @@ class PriceHistory:
         risers = sorted((m for m in moves if m.delta > 0), key=lambda m: -m.delta)[:limit]
         fallers = sorted((m for m in moves if m.delta < 0), key=lambda m: m.delta)[:limit]
         return risers, fallers
+
+    # -- match results (for fixture difficulty) --------------------------------
+
+    def store_results(self, week: int, matches: Iterable[Match]) -> None:
+        rows = [(week, str(m.id), _club(m.localId, m.local), _club(m.visitorId, m.visitor),
+                 m.localScore, m.visitorScore, m.matchDate) for m in matches]
+        self._db.executemany("INSERT OR REPLACE INTO results VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        self._db.commit()
+
+    def finished_weeks(self) -> set[int]:
+        """Jornadas whose every match has a score: these never need fetching again."""
+        rows = self._db.execute(
+            "SELECT week FROM results GROUP BY week "
+            "HAVING COUNT(*) > 0 AND SUM(local_score IS NULL OR visitor_score IS NULL) = 0").fetchall()
+        return {r[0] for r in rows}
+
+    def results(self) -> list[Match]:
+        rows = self._db.execute("SELECT match_id, local_id, visitor_id, local_score, visitor_score, "
+                                "match_date FROM results").fetchall()
+        return [Match(id=r[0], localId=r[1], visitorId=r[2], localScore=r[3], visitorScore=r[4],
+                      matchDate=r[5]) for r in rows]
+
+
+def _club(club_id: object, club: object) -> str | None:
+    if club_id is not None:
+        return str(club_id)
+    nested = getattr(club, "id", None)
+    return str(nested) if nested is not None else None
