@@ -251,8 +251,8 @@ async def cmd_healthcheck(rt: Runtime, args: argparse.Namespace) -> int:
     recorder = FixtureRecorder() if args.save_fixtures else None
     client = (FantasyClient(rt.settings, rt.tokens, rt.freeze, rt.http, on_response=recorder)
               if recorder else rt.client)
-    report = await run_and_alert(HealthCheck(rt.settings, rt.tokens, client), rt.alerter,
-                                 alert=not args.no_alert)
+    check = HealthCheck(rt.settings, rt.tokens, client, external=rt.external)
+    report = await run_and_alert(check, rt.alerter, alert=not args.no_alert)
     print(report.console_text())
     if recorder is not None:
         directory = Path(args.save_fixtures).expanduser()
@@ -279,6 +279,31 @@ def cmd_telegram_set_token(settings: Settings) -> int:
         return 1
     write_private_file(path, (token + "\n").encode())
     print(f"Stored the bot token in {path} (mode 600).")
+    return 0
+
+
+# Optional outside-data keys: (setting, where to get one, expected shape).
+SECRETS = {
+    "odds_api_key": ("The Odds API key (the-odds-api.com, free plan)", re.compile(r"^[A-Za-z0-9_-]{20,80}$")),
+    "football_data_token": ("football-data.org token (football-data.org/client/register)",
+                            re.compile(r"^[A-Za-z0-9_-]{20,80}$")),
+}
+
+
+def cmd_secret_set(settings: Settings, name: str) -> int:
+    label, shape = SECRETS[name]
+    path = getattr(settings, f"{name}_file")
+    if path is None:
+        print(f"Set FANTASYBOT_{name.upper()}_FILE to where it should be stored.", file=sys.stderr)
+        return 2
+    value = read_paste(f"Paste your {label}. It will not be shown on screen.").strip()
+    if not shape.match(value):
+        print("That doesn't look like a key (expected one long run of letters and digits); "
+              "nothing was stored.",
+              file=sys.stderr)
+        return 1
+    write_private_file(Path(path), (value + "\n").encode())
+    print(f"Stored it in {path} (mode 600). `fantasybot healthcheck` checks that it works.")
     return 0
 
 
@@ -322,7 +347,8 @@ def action_store(rt: Runtime) -> ActionStore:
 
 async def cmd_briefing(rt: Runtime, args: argparse.Namespace) -> int:
     try:
-        messages, view = await briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send)
+        messages, view = await briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send,
+                                        external=rt.external)
     except BriefingError as exc:
         print(f"Briefing failed: {exc}", file=sys.stderr)
         return 1
@@ -347,7 +373,7 @@ async def cmd_listen(rt: Runtime, args: argparse.Namespace) -> int:
         return 2
 
     async def fresh_briefing() -> LeagueView:
-        _, view = await briefing(rt.client, rt.settings, rt.alerter)
+        _, view = await briefing(rt.client, rt.settings, rt.alerter, external=rt.external)
         return view
 
     with action_store(rt) as store:
@@ -421,7 +447,7 @@ def cmd_actions_log(settings: Settings) -> int:
 async def cmd_guard(rt: Runtime, args: argparse.Namespace) -> int:
     try:
         result = await guard_check(rt.client, rt.settings, rt.alerter, send=not args.no_send,
-                                   window_hours=args.hours)
+                                   window_hours=args.hours, external=rt.external)
     except BriefingError as exc:
         print(f"Guard failed: {exc}", file=sys.stderr)
         return 1
@@ -491,6 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     act_sub = act.add_subparsers(dest="actions_command", required=True)
     act_sub.add_parser("log", help="every confirmed action, simulated or real")
 
+    sec = sub.add_parser("secret", help="store an optional outside-data key")
+    sec_sub = sec.add_subparsers(dest="secret_command", required=True)
+    sec_set = sec_sub.add_parser("set", help="store a key pasted on stdin (not shown on screen)")
+    sec_set.add_argument("name", choices=sorted(SECRETS))
+
     sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
     sub.add_parser("about", help="version, license and credits")
     return parser
@@ -540,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_actions_log(settings)
         if args.command == "telegram" and args.telegram_command == "set-token":
             return cmd_telegram_set_token(settings)
+        if args.command == "secret":
+            return cmd_secret_set(settings, args.name)
         if args.command == "auth" and args.auth_command == "status":
             store = TokenStore(settings.token_path, settings.resolved_token_key())
             return print_status(settings, store, FreezeGuard(settings.freeze_path))

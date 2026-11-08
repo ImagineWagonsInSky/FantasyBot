@@ -19,6 +19,7 @@ from ..alerts import Alerter
 from ..api import FantasyClient
 from ..auth.store import write_private_file
 from ..config import Settings
+from ..external import ExternalData
 from .analysis import (
     SquadPlayer,
     assess_readiness,
@@ -43,21 +44,22 @@ class GuardResult:
 
 async def run_guard(client: FantasyClient, settings: Settings, alerter: Alerter, *,
                     now: datetime | None = None, send: bool = True, window_hours: float = 24,
-                    final_hours: float = 3,
+                    final_hours: float = 3, external: ExternalData | None = None,
                     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> str | None:
     """Returns the alert text if one was due (and sent, unless send=False)."""
     result = await guard_check(client, settings, alerter, now=now, send=send, window_hours=window_hours,
-                               final_hours=final_hours, sleep=sleep)
+                               final_hours=final_hours, external=external, sleep=sleep)
     return result.message
 
 
 async def guard_check(client: FantasyClient, settings: Settings, alerter: Alerter, *,
                       now: datetime | None = None, send: bool = True, window_hours: float = 24,
-                      final_hours: float = 3,
+                      final_hours: float = 3, external: ExternalData | None = None,
                       sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> GuardResult:
+    """external: only its cached copies are read here, so the hourly guard spends no credits."""
     now = now or datetime.now(timezone.utc)
     view = await gather(client, settings, now, rivals=False, market=False, details=False,
-                        activity=False, results=False, sleep=sleep)
+                        activity=False, results=False, external=external, sleep=sleep)
     kickoff = next_kickoff(view.matches, view.week, now)
     if kickoff is None or kickoff.in_progress:
         return GuardResult(None, view)

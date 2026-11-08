@@ -65,6 +65,10 @@ Everyday
   rebuild                  rebuild the image after `git pull`
   schedule remove          stop the daily run
 
+Outside data (optional, free; see README "Outside data")
+  secret set odds_api_key          match odds from The Odds API (paste, not shown)
+  secret set football_data_token   real fixtures and results from football-data.org
+
 Acting from Telegram (off unless FANTASYBOT_ACTIONS=on; see README)
   listen start|stop|restart|status|logs   the always-on listener for buttons and commands
   actions log              every confirmed action, simulated or real
@@ -332,5 +336,6 @@ case "${1:-help}" in
   telegram)
     if [ "${2:-}" = set-token ]; then need_docker; run_in setup "$@"
     else need_docker; run_in fantasybot "$@"; fi ;;
+  secret) need_docker; run_in setup "$@" ;;
   *) need_docker; run_in fantasybot "$@" ;;
 esac

@@ -12,6 +12,7 @@ from .alerts import Alerter, build_alerter
 from .api import FantasyClient
 from .auth import FreezeGuard, TokenManager, TokenStore
 from .config import Settings
+from .external import ExternalData
 
 
 @dataclass
@@ -23,6 +24,7 @@ class Runtime:
     alerter: Alerter
     tokens: TokenManager
     client: FantasyClient
+    external: ExternalData
 
 
 @contextlib.asynccontextmanager
@@ -36,4 +38,5 @@ async def open_runtime(
         alerter = build_alerter(settings, http)
         tokens = TokenManager(settings, store, freeze, alerter, http)
         client = FantasyClient(settings, tokens, freeze, http)
-        yield Runtime(settings, http, store, freeze, alerter, tokens, client)
+        external = ExternalData(http, settings)
+        yield Runtime(settings, http, store, freeze, alerter, tokens, client, external)

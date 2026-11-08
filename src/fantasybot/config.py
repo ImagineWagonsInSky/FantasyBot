@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Madrid"  # how times are shown; LaLiga's own clock by default
     earn_per_point: int = 100_000  # paid per point after each jornada (rivals' cash estimates)
 
+    # Outside data (see README, "Outside data"). Each is optional: no key, no feature.
+    odds_api_key: SecretStr | None = None
+    odds_api_key_file: Path | None = None
+    odds_api_base: str = "https://api.the-odds-api.com"
+    odds_sport: str = "soccer_spain_la_liga"
+    odds_regions: str = "eu"
+    football_data_token: SecretStr | None = None
+    football_data_token_file: Path | None = None
+    football_data_base: str = "https://api.football-data.org"
+    football_data_competition: str = "PD"  # Primera División
+    lineups: bool = True  # probable lineups from futbolfantasy.com
+    futbolfantasy_base: str = "https://www.futbolfantasy.com"
+
     # Selling: who the daily relist suggests ("everyone", "bench" or "off"), and how far
     # above value an offer must be before the bot suggests taking it.
     shop_window: str = "everyone"
@@ -144,6 +157,19 @@ class Settings(BaseSettings):
             "no token encryption key: set FANTASYBOT_TOKEN_KEY_FILE (preferred) or "
             "FANTASYBOT_TOKEN_KEY. Generate one with `fantasybot auth gen-key`."
         )
+
+    def optional_secret(self, name: str) -> str | None:
+        """An optional key (odds_api_key, football_data_token): None when not set up."""
+        direct = getattr(self, name)
+        if direct is not None:
+            return direct.get_secret_value().strip() or None
+        path = getattr(self, f"{name}_file")
+        if path is None or not Path(path).exists():
+            return None
+        try:
+            return _read_secret_file(Path(path), name.replace("_", " "))
+        except ConfigError:
+            return None
 
     def resolved_telegram_token(self) -> str | None:
         if self.telegram_bot_token is not None:

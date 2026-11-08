@@ -236,11 +236,15 @@ ranks above another:
   player didn't play as 0) plus 40% season average.
 - Injured or suspended: 0. Doubt: half.
 - A fit player who didn't play last jornada: ×0.7 (rotation risk).
-- **Fixtures**, rated from this season's results:
-  - attackers gain against defences that concede a lot;
-  - defenders and keepers lose against attacks that score a lot;
-  - coaches follow the strength gap between the two clubs;
-  - home is worth +5%, away −5%.
+- **Fixtures**, rated from bookmakers' odds when they're set up (see
+  [Outside data](#outside-data)), otherwise from this season's results:
+  - attackers gain against defences that concede a lot (with odds: their
+    club's expected goals);
+  - defenders and keepers lose against attacks that score a lot (with odds:
+    their club's chance of a clean sheet);
+  - coaches follow the strength gap between the two clubs (with odds: their
+    club's chance of winning);
+  - from results, home is worth +5% and away −5%; the odds already include it.
 
   Early in the season a club's rating is pulled towards average, and each
   fixture is capped between ×0.75 and ×1.30. A player whose club has no
@@ -293,6 +297,45 @@ API. Check anything marked "guide" in the app before relying on it.
 | Recently signed players are locked from clause steals for a while; the API gives the exact unlock time | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), the API |
 | Shield: free, 2 players, 24h (48h with Premium), only on open clauses | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), [DAZN](https://www.dazn.com/es-ES/news/f%C3%BAtbol/que-es-blindaje-laliga-fantasy-como-funciona/p2wqlqgud2ls1s0o2z5ypimpl) |
 | Points come from Opta stats plus a 0–4 bonus (`marca_points` in the API) | [LaLiga](https://www.laliga.com/en-FR/news/a-new-version-of-laliga-fantasy-launches-with-100percent-objective-scoring), the API |
+
+## Outside data
+
+LaLiga Fantasy's API only knows LaLiga Fantasy. Each of these adds something
+it doesn't know, is free, and is optional: without it, the bot works as
+before. Nothing here can act on your team.
+
+### Match odds (The Odds API)
+
+Bookmakers' prices are the best free forecast of a match there is: they
+already account for injuries, form, rotation and home advantage. Each
+morning the briefing fetches LaLiga's 1X2 and over/under 2.5 prices from
+European bookmakers, removes each bookmaker's margin, averages them, and
+fits each side's expected goals to them (a Poisson model). That gives:
+
+- a **🎲 section** in the briefing: next jornada's matches, favourites first,
+  with each side's chance of winning and expected goals. ★ marks clubs you
+  have players in;
+- **fixture difficulty** from the odds instead of past results (see
+  Expected points above), so lineups, buys and sells follow it;
+- the **win chance in fixture labels**, e.g. "vs RMA (a, 18% win)".
+
+Set up:
+
+1. Get a free key at <https://the-odds-api.com> (the free plan has 500
+   credits a month, no card needed).
+2. `./fb secret set odds_api_key` and paste it. It isn't shown on screen
+   and goes in the secrets volume, like the Telegram token.
+3. `./fb healthcheck --no-alert` shows `odds_api` OK and the credits left.
+
+Each fetch costs 2 credits (two markets, one region). The briefing fetches
+once a day; a `/briefing` from Telegram reuses the morning's copy for 6
+hours; the hourly guard and the health check never spend credits. That's
+around 60–80 credits a month. If the API fails, the briefing uses the last
+copy and says so; with no copy at all, it falls back to results.
+
+Matches are paired with LaLiga's fixtures by club name ("Athletic Bilbao"
+and "Athletic Club" are the same club) and kickoff date, so a renamed club
+needs adding to `src/fantasybot/external/names.py`.
 
 ## Acting from Telegram
 
@@ -456,6 +499,8 @@ as unset.
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
+| `FANTASYBOT_ODDS_API_KEY_FILE` | | file holding The Odds API key (set by Docker; `./fb secret set odds_api_key`) |
+| `FANTASYBOT_ODDS_REGIONS` | `eu` | bookmaker regions to average (`eu`, `uk`; each extra region costs credits) |
 
 ## Security notes
 
@@ -493,6 +538,10 @@ encryption key and the Telegram bot token. What's done about it:
   account.
 - **Captured responses are protected.** Saved fixtures are anonymised,
   mode 600, and git-ignored.
+- **Outside-data keys are kept like the bot token.** They're optional, live
+  in the secrets volume (mode 600), and are redacted from errors and logs.
+  They're read-only keys to public football data, so a leaked one costs
+  free credits, nothing more. Outside data only ever informs suggestions.
 
 ## Development
 

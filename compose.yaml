@@ -2,7 +2,8 @@
 #
 # Two named volumes hold everything that persists:
 #   state    the encrypted LaLiga session and the write-freeze marker
-#   secrets  the key that decrypts it, and the Telegram bot token
+#   secrets  the key that decrypts it, the Telegram bot token and the
+#            optional outside-data keys (odds, football-data.org)
 # They are kept apart so one can be backed up or inspected without the other.
 # Named volumes live inside Docker, not in your home folder, so Time Machine,
 # iCloud or Dropbox never pick them up.
@@ -30,6 +31,8 @@ x-hardening: &hardening
     FANTASYBOT_STATE_DIR: /state
     FANTASYBOT_TOKEN_KEY_FILE: /secrets/token_key
     FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE: /secrets/telegram_bot_token
+    FANTASYBOT_ODDS_API_KEY_FILE: /secrets/odds_api_key
+    FANTASYBOT_FOOTBALL_DATA_TOKEN_FILE: /secrets/football_data_token
 
 services:
   # Everyday runs: health check, auth import/status, telegram test.
@@ -40,8 +43,8 @@ services:
       - state:/state
       - secrets:/secrets:ro
 
-  # Only for writing secrets: `./fb init` (creates the key) and
-  # `./fb telegram set-token`.
+  # Only for writing secrets: `./fb init` (creates the key),
+  # `./fb telegram set-token` and `./fb secret set`.
   setup:
     <<: *hardening
     profiles: [setup]

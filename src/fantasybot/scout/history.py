@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS offers (
     value      INTEGER NOT NULL,
     from_market INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS external_cache (
+    source     TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    PRIMARY KEY (source, day)
+);
 CREATE TABLE IF NOT EXISTS cash_offsets (
     day    TEXT PRIMARY KEY,
     offset INTEGER NOT NULL
@@ -187,6 +194,23 @@ class PriceHistory:
             return None
         premiums = [m / v - 1 for m, v in rows]
         return len(premiums), min(premiums), sum(premiums) / len(premiums), max(premiums)
+
+    # -- cached outside data (odds, real fixtures, probable lineups) -------------
+
+    def cached(self, source: str, day: date) -> tuple[str, str] | None:
+        row = self._db.execute("SELECT fetched_at, body FROM external_cache WHERE source = ? AND day = ?",
+                               (source, day.isoformat())).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def latest_cached(self, source: str) -> tuple[str, str] | None:
+        row = self._db.execute("SELECT fetched_at, body FROM external_cache WHERE source = ? "
+                               "ORDER BY day DESC LIMIT 1", (source,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def put_cached(self, source: str, day: date, fetched_at: str, body: str) -> None:
+        self._db.execute("INSERT OR REPLACE INTO external_cache VALUES (?, ?, ?, ?)",
+                         (source, day.isoformat(), fetched_at, body))
+        self._db.commit()
 
 
 def _club(club_id: object, club: object) -> str | None:

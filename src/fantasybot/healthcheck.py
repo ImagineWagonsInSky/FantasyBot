@@ -23,6 +23,7 @@ from .api import ApiError, FantasyClient, ResponseShapeError
 from .api.models import same_id
 from .auth import AuthUnavailable, TokenManager
 from .config import Settings
+from .external import ExternalData, ExternalError
 from .redact import redact
 
 log = logging.getLogger(__name__)
@@ -102,7 +103,9 @@ class HealthCheck:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        external: ExternalData | None = None,
     ) -> None:
+        self._external = external
         self._settings = settings
         self._tokens = tokens
         self._client = client
@@ -239,7 +242,31 @@ class HealthCheck:
                     lambda: c.get_player_details(ctx["player_id"], ctx["league_id"]))
         await check("check_player_shield", ("auth", "league_id", "player_team_id"),
                     lambda: c.check_player_shield(ctx["league_id"], ctx["player_team_id"]))
+        await self._outside(report)
         return report
+
+    async def _outside(self, report: HealthReport) -> None:
+        """Outside sources are optional: one breaking is a warning, never a failure."""
+        ext = self._external
+        if ext is None:
+            return
+        sources = [("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status)]
+        for name, label, enabled, call in sources:
+            if not enabled:
+                report.results.append(CheckResult(name, "skip", "not set up (optional)"))
+                continue
+            started = self._monotonic()
+            try:
+                detail = await call()
+            except ExternalError as exc:
+                report.results.append(CheckResult(name, "warn", f"{label}: {exc.message}"))
+                continue
+            report.results.append(CheckResult(name, "ok", detail, self._elapsed(started)))
+            if name == "odds_api" and (ext.credits() or 999) < 40:
+                report.results.append(CheckResult(
+                    "odds_api_credits", "warn",
+                    f"The Odds API: only {ext.credits_left} credits left this month; the briefing "
+                    "falls back to results-based difficulty when they run out"))
 
     def _elapsed(self, started: float) -> int:
         return int((self._monotonic() - started) * 1000)

@@ -18,6 +18,8 @@ from ..api import ApiError, FantasyClient, ResponseShapeError
 from ..api.models import ActivityEntry, Id, Lineup, MarketItem, Match, Offer, Player, StandingEntry, same_id
 from ..auth import AuthUnavailable
 from ..config import Settings
+from ..external import ExternalData, ExternalError
+from ..external.odds import MatchOdds, match_odds
 from .analysis import (
     Rival,
     SquadPlayer,
@@ -38,7 +40,7 @@ from .analysis import (
     sell_to_cover,
 )
 from .cash import DRIFT_LIMIT, CashEstimates, estimate
-from .difficulty import HORIZON, FixtureModel, club_records
+from .difficulty import HORIZON, FixtureModel, club_records, player_club
 from .history import PriceHistory
 from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
 from .selling import (
@@ -90,6 +92,8 @@ class LeagueView:
     offers: dict[str, list[Offer]] = field(default_factory=dict)  # by your playerTeamId
     settings: Settings | None = None
     change_3d: dict[str, int] = field(default_factory=dict)  # value change by player id
+    club_names: dict[str, str] = field(default_factory=dict)  # club id -> short name
+    odds: dict[tuple[str, str], MatchOdds] = field(default_factory=dict)  # (home, away) club ids
 
     def keep(self) -> list[SquadPlayer]:
         """The best XI plus coach: who not to sell."""
@@ -120,6 +124,20 @@ class LeagueView:
         return next(i for i, e in enumerate(ordered, 1) if same_id(e.team.id, entry.team.id))
 
 
+async def outside(label: str, fetch: Callable[[], Awaitable[T]], fallback: Callable[[], Awaitable[T]],
+                  errors: list[str]) -> T | None:
+    """Outside data never breaks a run: on failure, use the last copy and say so."""
+    try:
+        return await fetch()
+    except ExternalError as exc:
+        try:
+            cached = await fallback()
+        except ExternalError:
+            cached = None
+        errors.append(f"{label}: {exc.message}" + (" (using the last copy)" if cached else ""))
+        return cached
+
+
 def _describe(exc: Exception) -> str:
     if isinstance(exc, ApiError):
         return exc.message
@@ -130,12 +148,12 @@ def _describe(exc: Exception) -> str:
 
 async def gather(client: FantasyClient, settings: Settings, now: datetime, *, rivals: bool = True,
                  market: bool = True, details: bool = True, activity: bool = True,
-                 results: bool = True,
+                 results: bool = True, external: ExternalData | None = None,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> LeagueView:
     """Everything the briefing (or, with most flags off, the guard) needs.
 
-    results=False uses only match results cached by earlier runs, so the
-    hourly guard stays cheap."""
+    results=False uses only match results and outside data cached by earlier
+    runs, so the hourly guard stays cheap and spends no API credits."""
     errors: list[str] = []
 
     async def fetch(label: str, call: Callable[[], Awaitable[T]], default: T) -> T:
@@ -180,9 +198,18 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         for w in range(week, week + HORIZON):
             view.matches[w] = await fetch(f"jornada {w} fixtures", lambda w=w: client.get_matchday(w), [])
     names: dict[str, str] = {}
+    aliases: dict[str, tuple[str | None, ...]] = {}
     if results:
         clubs = await fetch("club names", client.get_teams_master, [])
         names = {str(c.id): c.shortName or c.name or str(c.id) for c in clubs}
+        aliases = {str(c.id): (c.name, c.shortName, c.slug) for c in clubs}
+    view.club_names = names
+    if external is not None and external.odds_enabled:
+        events = await outside("odds", lambda: external.odds_events(refresh=results),
+                               lambda: external.odds_events(refresh=False), errors)
+        if events:
+            upcoming = [m for w in sorted(view.matches) for m in view.matches[w]]
+            view.odds = match_odds(events, upcoming, aliases)
     with PriceHistory(settings.state_dir / "history.sqlite") as store:
         if results and week is not None:
             finished = store.finished_weeks()
@@ -196,7 +223,7 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         known_results = store.results()
     kickoff = next_kickoff(view.matches, week, now)
     view.fixtures = FixtureModel(club_records(known_results, now), view.matches,
-                                 kickoff.jornada if kickoff else week, names)
+                                 kickoff.jornada if kickoff else week, names, odds=view.odds)
     view.formations = parse_formations(await fetch("formations", client.get_free_formations, []))
     if market:
         view.market = await fetch("market", lambda: client.get_market(league_id), [])
@@ -337,6 +364,33 @@ def _lineup_and_readiness(view: LeagueView) -> str:
         parts.append(f"{POSITION_LABELS[COACH]} {plan.coach.name}")
     lines.append(" " + " · ".join(parts))
     return "\n".join(lines)
+
+
+def _odds(view: LeagueView) -> str:
+    """The next jornada as the bookmakers see it, favourites first."""
+    kickoff = next_kickoff(view.matches, view.week, view.now)
+    if not view.odds or kickoff is None:
+        return ""
+    mine = {player_club(p.player) for p in view.my_squad}
+    rows = []
+    for m in view.matches.get(kickoff.jornada, []):
+        home = m.localId if m.localId is not None else (m.local.id if m.local else None)
+        away = m.visitorId if m.visitorId is not None else (m.visitor.id if m.visitor else None)
+        odds = view.odds.get((str(home), str(away)))
+        if odds is None:
+            continue
+
+        def club(c: object) -> str:
+            return view.club_names.get(str(c), str(c)) + ("★" if str(c) in mine else "")
+
+        rows.append((max(odds.p_home, odds.p_away),
+                     f" {club(home)} {odds.p_home:.0%} · draw {odds.p_draw:.0%} · {club(away)} "
+                     f"{odds.p_away:.0%} (goals {odds.home_goals:.1f}–{odds.away_goals:.1f})"))
+    if not rows:
+        return ""
+    rows.sort(key=lambda r: -r[0])
+    return "\n".join([f"🎲 Jornada {kickoff.jornada} by the odds (★ = your players' clubs):"]
+                     + [r for _, r in rows])
 
 
 def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: dict[str, int]) -> str:
@@ -545,6 +599,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
     sections = [
         _header(view, team_value),
         _lineup_and_readiness(view),
+        _odds(view),
         _market(view, team_value, d1, d3),
         _clauses(view),
         _exposure(view),
@@ -554,7 +609,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
     ]
     if view.errors:
         sections.append("ℹ️ Missing today: " + "; ".join(view.errors[:4]))
-    return pack(sections)
+    return pack([s for s in sections if s])
 
 
 def pack(sections: list[str], limit: int = TELEGRAM_CHUNK) -> list[str]:
@@ -573,12 +628,12 @@ def pack(sections: list[str], limit: int = TELEGRAM_CHUNK) -> list[str]:
 
 
 async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,
-                   now: datetime | None = None, send: bool = True,
+                   now: datetime | None = None, send: bool = True, external: ExternalData | None = None,
                    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
                    ) -> tuple[list[str], LeagueView]:
     """Gathers, records today's prices, composes and (optionally) sends the briefing."""
     now = now or datetime.now(timezone.utc)
-    view = await gather(client, settings, now, sleep=sleep)
+    view = await gather(client, settings, now, external=external, sleep=sleep)
     with PriceHistory(settings.state_dir / "history.sqlite") as history:
         today = now.astimezone(view.tz).date()
         if view.players:
@@ -596,7 +651,8 @@ async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, 
 
 
 async def run_briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,
-                       now: datetime | None = None, send: bool = True,
+                       now: datetime | None = None, send: bool = True, external: ExternalData | None = None,
                        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> list[str]:
-    messages, _ = await briefing(client, settings, alerter, now=now, send=send, sleep=sleep)
+    messages, _ = await briefing(client, settings, alerter, now=now, send=send, external=external,
+                                 sleep=sleep)
     return messages
