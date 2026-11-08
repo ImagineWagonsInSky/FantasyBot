@@ -36,6 +36,9 @@ _CLUBS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+KNOWN_CLUBS = frozenset(key for key, _ in _CLUBS) | {"deportivo"}
+
+
 def normalize(text: str) -> str:
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()

@@ -25,6 +25,7 @@ UNKNOWN_STATUS_AVAILABILITY = 0.7
 RECENT_JORNADAS = 3
 FORM_WEIGHT = 0.6  # the rest is the season average
 DID_NOT_PLAY_FACTOR = 0.7  # fit, but didn't play last jornada: rotation risk
+BENCH_SHARE = 0.3  # what a player who doesn't start still scores, on average, coming on
 
 
 def position_of(player: Player) -> int | None:
@@ -46,6 +47,7 @@ class FixtureOutlook:
     next_factor: float = 1.0  # next jornada; 0 when his club doesn't play
     next_label: str = ""  # e.g. "vs RMA (h)", or "no match"
     horizon_factor: float = 1.0  # average over the next few jornadas
+    start: float | None = None  # chance of starting next jornada (probable lineups), when known
 
 
 NEUTRAL = FixtureOutlook()
@@ -81,12 +83,20 @@ def project(player: Player, current_week: int | None = None,
     base = FORM_WEIGHT * form + (1 - FORM_WEIGHT) * season if form is not None else season
 
     factor = availability
-    if status == "ok" and weeks and position_of(player) != COACH and weeks[-1].minutes == 0:
+    horizon = availability
+    if fixtures.start is not None and position_of(player) != COACH and availability > 0:
+        # The probable lineup already weighs doubts and rotation, so it replaces both.
+        played = BENCH_SHARE + (1 - BENCH_SHARE) * fixtures.start
+        factor = played
+        horizon = (1 + 2 * played) / 3  # next jornada fully, the two after it halfway
+        note = f"{fixtures.start:.0%} to start" if fixtures.start < 0.5 else ""
+    elif status == "ok" and weeks and position_of(player) != COACH and weeks[-1].minutes == 0:
         factor *= DID_NOT_PLAY_FACTOR
+        horizon = factor
         note = "didn't play last jornada"
     if fixtures.next_factor == 0 and not note:
         note = "no match this jornada"
-    points = factor * base
-    return Projection(round(points * fixtures.next_factor, 2), round(points * fixtures.horizon_factor, 2),
+    return Projection(round(factor * base * fixtures.next_factor, 2),
+                      round(horizon * base * fixtures.horizon_factor, 2),
                       round(season, 2), round(form, 2) if form is not None else None, availability,
                       note, fixtures.next_label)

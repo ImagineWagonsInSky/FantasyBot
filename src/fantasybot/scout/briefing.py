@@ -7,8 +7,9 @@ failing endpoint drops one section instead of the whole briefing.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, TypeVar
@@ -20,6 +21,8 @@ from ..auth import AuthUnavailable
 from ..config import Settings
 from ..external import ExternalData, ExternalError
 from ..external.football_data import DataCheck, cross_check, parse_matches, season_of
+from ..external.lineups import LineupEntry, match_players
+from ..external.names import KNOWN_CLUBS, club_key
 from ..external.odds import MatchOdds, match_odds
 from .analysis import (
     Rival,
@@ -96,6 +99,9 @@ class LeagueView:
     club_names: dict[str, str] = field(default_factory=dict)  # club id -> short name
     odds: dict[tuple[str, str], MatchOdds] = field(default_factory=dict)  # (home, away) club ids
     data_check: DataCheck | None = None  # LaLiga Fantasy's calendar vs football-data.org
+    lineups: dict[str, LineupEntry] = field(default_factory=dict)  # player id -> probable lineup entry
+    lineup_clubs: int = 0  # clubs whose probable lineup was read
+    unmatched: list[tuple[str, str]] = field(default_factory=list)  # (club id, name) of starters not found
 
     def keep(self) -> list[SquadPlayer]:
         """The best XI plus coach: who not to sell."""
@@ -108,7 +114,16 @@ class LeagueView:
         return self.cash.get(entry.team.manager.id)
 
     def outlook_fn(self) -> Callable[[Player], FixtureOutlook] | None:
-        return self.fixtures.outlook if self.fixtures else None
+        if self.fixtures is None and not self.lineups:
+            return None
+        fixtures, lineups = self.fixtures, self.lineups
+
+        def outlook(player: Player) -> FixtureOutlook:
+            base = fixtures.outlook(player) if fixtures else FixtureOutlook()
+            entry = lineups.get(str(player.id))
+            return dataclasses.replace(base, start=entry.chance) if entry else base
+
+        return outlook
 
     def when(self, dt: datetime | None) -> str:
         return when(dt, self.tz)
@@ -124,6 +139,39 @@ class LeagueView:
     def rank_of(self, entry: StandingEntry) -> int:
         ordered = sorted(self.standing, key=lambda e: -(e.points or 0))
         return next(i for i, e in enumerate(ordered, 1) if same_id(e.team.id, entry.team.id))
+
+
+async def read_lineups(view: LeagueView, external: ExternalData, relevant: Iterable[Player],
+                       aliases: dict[str, tuple[str | None, ...]], *, refresh: bool) -> None:
+    """Probable lineups for the clubs of the given players (yours and the market's)."""
+    by_club: dict[str, list[Player]] = {}
+    for p in view.players or relevant:  # every LaLiga player when the list was fetched
+        club = player_club(p)
+        if club is not None:
+            by_club.setdefault(club, []).append(p)
+    clubs = list(dict.fromkeys(c for c in (player_club(p) for p in relevant) if c is not None))
+    failed: list[str] = []
+    for club in clubs:
+        names = list(aliases.get(club, ()))
+        ref = next((r for w in view.matches.values() for m in w for r in (m.local, m.visitor)
+                    if r is not None and str(r.id) == club), None)
+        if ref is not None:
+            names += [ref.name, ref.shortName, ref.slug]
+        slug = club_key(*names)
+        if slug not in KNOWN_CLUBS:
+            continue
+        lineup = await outside("probable lineups", lambda s=slug: external.lineup(s, refresh=refresh),
+                               lambda s=slug: external.lineup(s, refresh=False), failed)
+        if lineup is None:
+            continue
+        view.lineup_clubs += 1
+        matched = match_players(lineup, by_club.get(club, []))
+        view.lineups.update(matched)
+        view.unmatched += [(club, e.nickname) for e in lineup.entries
+                           if e.starter and not any(e is m for m in matched.values())]
+    if failed:
+        more = f" (and {len(failed) - 1} more clubs)" if len(failed) > 1 else ""
+        view.errors.append(failed[0] + more)
 
 
 async def outside(label: str, fetch: Callable[[], Awaitable[T]], fallback: Callable[[], Awaitable[T]],
@@ -263,6 +311,12 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
                 unexplained = view.cash.unexplained
                 previous = store.record_offset(now.astimezone(view.tz).date(), unexplained)
                 view.cash.uncertain = previous is not None and abs(previous - unexplained) > DRIFT_LIMIT
+
+    if external is not None and external.lineups_enabled:
+        mine = team_data.get(view.my_team_id)
+        relevant = [p.playerMaster for p in (mine.players if mine else [])]
+        relevant += [i.playerMaster for i in view.market]
+        await read_lineups(view, external, relevant, aliases, refresh=results)
 
     if details:
         wanted: list[Id] = []
@@ -405,6 +459,42 @@ def _odds(view: LeagueView) -> str:
     rows.sort(key=lambda r: -r[0])
     return "\n".join([f"🎲 Jornada {kickoff.jornada} by the odds (★ = your players' clubs):"]
                      + [r for _, r in rows])
+
+
+def _lineups(view: LeagueView) -> str:
+    """Your squad against the probable lineups: who's likely benched, where sources disagree."""
+    if not view.lineup_clubs:
+        return ""
+    # Your saved lineup is what scores; without one, the suggested XI.
+    saved = read_lineup(view.lineup, view.my_squad).members if view.my_squad else []
+    plan = best_lineup(view.my_squad, view.formations) if view.my_squad and not saved else None
+    watched = {str(p.player.id) for p in (saved or (plan.starters if plan else []))}
+    benched, disagree = [], []
+    for p in view.my_squad:
+        entry = view.lineups.get(str(p.player.id))
+        if entry is None:
+            continue
+        status = (p.player.playerStatus or "ok").lower()
+        if status in ("injured", "suspended") and entry.chance >= 0.6:
+            disagree.append(f"{p.name} (LaLiga: {status}; futbolfantasy: {entry.chance:.0%} to start)")
+        elif status == "ok" and entry.status == "injured":
+            disagree.append(f"{p.name} (LaLiga: fit; futbolfantasy: injured)")
+        elif str(p.player.id) in watched and entry.chance < 0.6:
+            benched.append(f"{p.name} {entry.chance:.0%}")
+    mine = {player_club(p.player) for p in view.my_squad}
+    missed = [name for club, name in view.unmatched if club in mine]
+    header = f"📋 Probable lineups (futbolfantasy.com, {view.lineup_clubs} clubs)"
+    if not (benched or disagree or missed):
+        return f"{header}: your likely starters should start; it's in the expected points."
+    lines = [f"{header}:"]
+    if benched:
+        lines.append(" In your lineup but may not start: " + ", ".join(benched)
+                     + ". The Best XI above already accounts for it")
+    if disagree:
+        lines.append(" Sources disagree: " + "; ".join(disagree) + ". Check before kickoff")
+    if missed:
+        lines.append(f" Couldn't match to LaLiga players: {', '.join(missed[:6])}")
+    return "\n".join(lines)
 
 
 CHECK_LABELS = {"postponed": "Not being played", "kickoff": "Kickoff moved",
@@ -644,6 +734,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
     sections = [
         _header(view, team_value),
         _lineup_and_readiness(view),
+        _lineups(view),
         _odds(view),
         _data_check(view),
         _market(view, team_value, d1, d3),

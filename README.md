@@ -16,8 +16,8 @@ when it doesn't.
   - The competition ID comes from config.
   - Writes are dry runs unless `FANTASYBOT_DRY_RUN=false`, are refused while
     writes are frozen, and are never retried automatically.
-  - Not ported: `scrapeTeamLineup` (LaLigaApp's own futbolfantasy.com
-    scraper) and `shieldPlayer` (it tells LaLiga a rewarded ad was watched).
+  - Not ported: `scrapeTeamLineup` (it calls LaLigaApp's own scraper; the
+    futbolfantasy.com pages are read directly instead, see Outside data) and `shieldPlayer` (it tells LaLiga a rewarded ad was watched).
 - **Health check** (`fantasybot healthcheck`). Redeems the refresh token,
   then calls every read endpoint and validates each response.
   - Your league, team and players are found automatically.
@@ -29,8 +29,9 @@ when it doesn't.
   would cost you points. Both only read from LaLiga: they recommend, and you
   act in the app. See [The daily briefing](#the-daily-briefing).
 - **Outside data** (optional, free). Bookmakers' odds for fixture difficulty,
-  and real fixtures and results to catch where LaLiga Fantasy's calendar is
-  wrong. See [Outside data](#outside-data).
+  real fixtures and results to catch where LaLiga Fantasy's calendar is
+  wrong, and probable lineups for who's likely to start. See
+  [Outside data](#outside-data).
 - **Acting from Telegram** (optional, off by default). Buttons under the
   briefing for the actions it suggests. Each one checks LaLiga again and asks
   you to confirm; until you switch off dry run, confirming only shows what
@@ -255,7 +256,8 @@ ranks above another:
 
 Lineups use next jornada's fixture. Market, clause and exposure picks use
 the average over the next three jornadas (shown as "xP/j"), because you keep
-a player for weeks. The model doesn't know about probable lineups yet.
+a player for weeks. With probable lineups (see [Outside data](#outside-data)),
+a player's chance of starting replaces the doubt and rotation guesses above.
 
 **Rivals' cash** is hidden by the API, so it's estimated the way people do
 it by hand:
@@ -373,6 +375,42 @@ One call a day for the briefing, one for the health check; cached like the
 odds, and the guard only reads the cache.
 
 Football data provided by the Football-Data.org API.
+
+### Probable lineups (futbolfantasy.com)
+
+Who's likely to start, from futbolfantasy.com's team pages, which publish a
+start percentage per player through the week. On by default
+(`FANTASYBOT_LINEUPS=false` turns it off), and needs no key.
+
+- **Expected points use the start chance.** A player who doesn't start still
+  scores something coming on, so he's worth 30% + 70% × his chance to start.
+  This replaces the "doubt: half" and "didn't play last jornada: ×0.7"
+  guesses, because the percentage already weighs both. An injured or
+  suspended player is still 0. Over the next three jornadas (buying,
+  keeping) a benching counts fully for the next one and halfway for the two
+  after.
+- **A 📋 section** lists players in your saved lineup who may not start
+  (under 60%), players where LaLiga and futbolfantasy disagree (LaLiga says
+  injured but he's expected to start, or the other way round), and any of
+  your clubs' starters the bot couldn't match to a LaLiga player.
+
+How it reads them:
+
+- Only the clubs of your players and of players on the market, one page
+  each, 2 seconds apart, once a day (cached for 12 hours). The guard reads
+  the cache only, and it never uses a copy older than 2 days.
+- Names are matched within each club: exact names, then one name inside the
+  other ("Einar" in "Einar Galilea"), then close spellings, with the
+  position settling close calls. A player can be matched once.
+- The page parser is ported from LaLigaApp (`onceParser.js`): the in-season
+  list with percentages, and the pre-season pitch view ("once tipo", no
+  percentages: starters count as 80%, alternatives 20%). The health check
+  reads one club's page and warns if it no longer finds a starting XI,
+  which is what a site redesign looks like.
+
+The parsing uses Python's own HTML parser, so a scraped page needs no
+extra dependency. It's a public page read a few times a day for personal
+use; turn it off if futbolfantasy.com asks.
 
 ## Acting from Telegram
 
@@ -538,6 +576,7 @@ as unset.
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
 | `FANTASYBOT_ODDS_API_KEY_FILE` | | file holding The Odds API key (set by Docker; `./fb secret set odds_api_key`) |
 | `FANTASYBOT_FOOTBALL_DATA_TOKEN_FILE` | | file holding the football-data.org token (set by Docker; `./fb secret set football_data_token`) |
+| `FANTASYBOT_LINEUPS` | `true` | probable lineups from futbolfantasy.com |
 | `FANTASYBOT_ODDS_REGIONS` | `eu` | bookmaker regions to average (`eu`, `uk`; each extra region costs credits) |
 
 ## Security notes
@@ -598,12 +637,13 @@ The tests run offline against an in-memory fake of the LaLiga API
 
 This product includes ‘LaLigaApp’ (c) 2025–present Externoak —
 <https://github.com/Externoak/LaLigaApp/>. FantasyBot ports its auth flow,
-API endpoint map and response adapters to Python. This attribution does not
-imply endorsement by the original authors.
+API endpoint map, response adapters and futbolfantasy.com lineup parser to
+Python. This attribution does not imply endorsement by the original authors.
 
 Football data provided by the Football-Data.org API
 (<https://www.football-data.org>), when you set up a token. Match odds come
 from The Odds API (<https://the-odds-api.com>), when you set up a key.
+Probable lineups are read from futbolfantasy.com's team pages.
 
 FantasyBot is licensed under GPL-3.0-or-later, including LaLigaApp's
 additional attribution term (GPLv3 §7). See [LICENSE](LICENSE) and

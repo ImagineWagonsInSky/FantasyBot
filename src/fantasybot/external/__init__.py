@@ -6,8 +6,10 @@ guard never spends API credits: only the morning run fetches.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -18,8 +20,15 @@ from ..config import Settings
 from ..redact import redact
 from ..scout.history import PriceHistory
 from .football_data import trim
+from .lineups import TeamLineup, parse_lineup
+from .names import KNOWN_CLUBS
 
 log = logging.getLogger(__name__)
+
+POLITE_DELAY = 2.0  # seconds between futbolfantasy.com pages
+# A plain, honest client name; no contact details.
+SCRAPER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) FantasyBot/1.0 (personal use)",
+                   "Accept": "text/html", "Accept-Language": "es-ES,es;q=0.9"}
 
 
 class ExternalError(Exception):
@@ -35,10 +44,13 @@ def _now() -> datetime:
 
 class ExternalData:
     def __init__(self, http: httpx.AsyncClient, settings: Settings, *,
-                 clock: Callable[[], datetime] = _now) -> None:
+                 clock: Callable[[], datetime] = _now,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self._http = http
         self._settings = settings
         self._clock = clock
+        self._sleep = sleep
+        self._scraped = 0  # futbolfantasy pages fetched by this process
         self.credits_left: str | None = None  # The Odds API's x-requests-remaining
 
     def credits(self) -> float | None:
@@ -60,15 +72,18 @@ class ExternalData:
         return self._settings.lineups
 
     async def cached(self, source: str, fetch: Callable[[], Awaitable[Any]], *, refresh: bool,
-                     max_age: timedelta) -> Any:
-        """Today's copy if fresh enough; otherwise fetch (only when refresh is allowed)."""
+                     max_age: timedelta, stale_after: timedelta | None = None) -> Any:
+        """Today's copy if fresh enough; otherwise fetch (only when refresh is allowed).
+
+        Without refresh, the latest copy is used, unless it's older than stale_after."""
         now = self._clock()
         today = now.astimezone(self._settings.display_tz()).date()
         with PriceHistory(self._settings.state_dir / "history.sqlite") as store:
             hit = store.cached(source, today) or (None if refresh else store.latest_cached(source))
         if hit is not None:
             fetched_at, body = hit
-            if not refresh or now - datetime.fromisoformat(fetched_at) < max_age:
+            age = now - datetime.fromisoformat(fetched_at)
+            if (refresh and age < max_age) or (not refresh and (stale_after is None or age < stale_after)):
                 return json.loads(body)
         if not refresh:
             return None
@@ -173,3 +188,37 @@ class ExternalData:
         if not season:
             raise ExternalError("football-data.org", "the competition has no current season")
         return f"season from {season.get('startDate')}, matchday {season.get('currentMatchday')}"
+
+    # -- futbolfantasy.com probable lineups ----------------------------------------
+
+    async def lineup(self, slug: str, *, refresh: bool = True) -> TeamLineup | None:
+        """A club's probable lineup; slug is its club key (names.py)."""
+        if not self.lineups_enabled or slug not in KNOWN_CLUBS or not re.fullmatch(r"[a-z0-9-]+", slug):
+            return None
+
+        async def fetch() -> dict[str, Any]:
+            if self._scraped:
+                await self._sleep(POLITE_DELAY)
+            self._scraped += 1
+            url = f"{self._settings.futbolfantasy_base.rstrip('/')}/laliga/equipos/{slug}"
+            html = await self._get("futbolfantasy", url, headers=SCRAPER_HEADERS, as_json=False)
+            parsed = parse_lineup(html)
+            if parsed is None or not parsed.entries:
+                raise ExternalError("futbolfantasy", f"no lineup on {slug}'s page (has the layout changed?)")
+            return parsed.to_json()
+
+        data = await self.cached(f"lineup:{slug}", fetch, refresh=refresh, max_age=timedelta(hours=12),
+                                 stale_after=timedelta(days=2))
+        return TeamLineup.from_json(data) if data else None
+
+    async def lineups_status(self, slug: str = "real-madrid") -> str:
+        """For the health check: one club's page still parses (cached like the briefing's)."""
+        lineup = await self.lineup(slug)
+        if lineup is None:
+            raise ExternalError("futbolfantasy", "probable lineups are off")
+        starters = sum(e.starter for e in lineup.entries)
+        if starters < 11:
+            raise ExternalError("futbolfantasy", f"only {starters} starters on {slug}'s page "
+                                "(has the layout changed?)")
+        return f"{slug}: {starters} starters, {len(lineup.entries) - starters} alternatives"
+

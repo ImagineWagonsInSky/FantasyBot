@@ -7,9 +7,12 @@ https://github.com/Externoak/LaLigaApp/
 
 FantasyBot ports LaLigaApp's B2C refresh-token flow (src/services/authService.js,
 src/stores/authStore.js), its API endpoint map (src/services/api.js) and its
-response adapters (src/services/responseAdapters.js) to Python.
+response adapters (src/services/responseAdapters.js) to Python, and its
+futbolfantasy.com lineup parser (src/services/onceParser.js).
 This attribution does not imply endorsement by the original authors.
 
-Outside data, each optional and fetched with your own key:
-- Football data provided by the Football-Data.org API (https://www.football-data.org).
-- Match odds from The Odds API (https://the-odds-api.com).
+Outside data, each optional:
+- Football data provided by the Football-Data.org API (https://www.football-data.org),
+  with your own token.
+- Match odds from The Odds API (https://the-odds-api.com), with your own key.
+- Probable lineups read from futbolfantasy.com team pages.

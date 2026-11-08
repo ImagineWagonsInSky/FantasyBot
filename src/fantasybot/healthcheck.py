@@ -251,10 +251,12 @@ class HealthCheck:
         if ext is None:
             return
         sources = [("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status),
-                   ("football_data", "football-data.org", ext.results_enabled, ext.football_data_status)]
+                   ("football_data", "football-data.org", ext.results_enabled, ext.football_data_status),
+                   ("lineups", "Probable lineups", ext.lineups_enabled, ext.lineups_status)]
         for name, label, enabled, call in sources:
             if not enabled:
-                report.results.append(CheckResult(name, "skip", "not set up (optional)"))
+                report.results.append(CheckResult(name, "skip", "off" if name == "lineups"
+                                                  else "not set up (optional)"))
                 continue
             started = self._monotonic()
             try:

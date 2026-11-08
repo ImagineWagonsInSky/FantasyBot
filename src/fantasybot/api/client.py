@@ -5,7 +5,8 @@ Every function in LaLigaApp's src/services/api.js (GPL-3.0-or-later,
 body, except:
 
 * scrapeTeamLineup: it calls LaLigaApp's own local scraper for
-  futbolfantasy.com, not LaLiga's API;
+  futbolfantasy.com, not LaLiga's API (external/lineups.py reads those pages
+  directly, with LaLigaApp's parser ported);
 * shieldPlayer: its body tells LaLiga a rewarded ad was watched
   (rewardedAd: 1). The read-only check_player_shield is kept.
 
