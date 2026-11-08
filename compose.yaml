@@ -49,6 +49,19 @@ services:
       - state:/state
       - secrets:/secrets
 
+  # Answers Telegram buttons and commands. Only does anything with
+  # FANTASYBOT_ACTIONS=on, and with FANTASYBOT_DRY_RUN=true (the default) it
+  # only ever simulates. Started by `./fb listen start`; keeps running and
+  # comes back after a reboot until `./fb listen stop`.
+  listener:
+    <<: *hardening
+    profiles: [listener]
+    command: ["listen"]
+    restart: unless-stopped
+    volumes:
+      - state:/state
+      - secrets:/secrets:ro
+
 volumes:
   state:
   secrets:

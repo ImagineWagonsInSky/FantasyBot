@@ -478,9 +478,11 @@ def pack(sections: list[str], limit: int = TELEGRAM_CHUNK) -> list[str]:
     return messages
 
 
-async def run_briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,
-                       now: datetime | None = None, send: bool = True,
-                       sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> list[str]:
+async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,
+                   now: datetime | None = None, send: bool = True,
+                   sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+                   ) -> tuple[list[str], LeagueView]:
+    """Gathers, records today's prices, composes and (optionally) sends the briefing."""
     now = now or datetime.now(timezone.utc)
     view = await gather(client, settings, now, sleep=sleep)
     with PriceHistory(settings.state_dir / "history.sqlite") as history:
@@ -490,4 +492,11 @@ async def run_briefing(client: FantasyClient, settings: Settings, alerter: Alert
     if send:
         for message in messages:
             await alerter.send(message)
+    return messages, view
+
+
+async def run_briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,
+                       now: datetime | None = None, send: bool = True,
+                       sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> list[str]:
+    messages, _ = await briefing(client, settings, alerter, now=now, send=send, sleep=sleep)
     return messages

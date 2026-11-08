@@ -28,6 +28,10 @@ when it doesn't.
   on Telegram, and an hourly guard that only speaks up when the next jornada
   would cost you points. Both only read from LaLiga: they recommend, and you
   act in the app. See [The daily briefing](#the-daily-briefing).
+- **Acting from Telegram** (optional, off by default). Buttons under the
+  briefing for the actions it suggests. Each one checks LaLiga again and asks
+  you to confirm; until you switch off dry run, confirming only shows what
+  would be sent. See [Acting from Telegram](#acting-from-telegram).
 
 There are two ways to run it:
 
@@ -139,6 +143,8 @@ in its container.
 | `./fb fixtures` | Save anonymised API responses to `fixtures-capture/` |
 | `./fb auth import` | Paste a fresh LaLiga token (also lifts a write freeze) |
 | `./fb logs` | The daily run's log |
+| `./fb listen start` / `stop` | The listener for Telegram buttons (see [Acting from Telegram](#acting-from-telegram)) |
+| `./fb actions log` | Every confirmed action, simulated or real |
 | `./fb help` | Everything else |
 
 To update to a newer version:
@@ -271,6 +277,67 @@ API. Check anything marked "guide" in the app before relying on it.
 | Shield: free, 2 players, 24h (48h with Premium), only on open clauses | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), [DAZN](https://www.dazn.com/es-ES/news/f%C3%BAtbol/que-es-blindaje-laliga-fantasy-como-funciona/p2wqlqgud2ls1s0o2z5ypimpl) |
 | Points come from Opta stats plus a 0–4 bonus (`marca_points` in the API) | [LaLiga](https://www.laliga.com/en-FR/news/a-new-version-of-laliga-fantasy-launches-with-100percent-objective-scoring), the API |
 
+## Acting from Telegram
+
+The briefing can end with buttons for the actions it suggests:
+
+- **Apply the best XI.**
+- **Bid on a market player:** the minimum, +5% or +10%.
+- **Steal a rival's player** by paying his clause.
+- **Raise one of your clauses:** enough to put him out of reach of everyone's
+  estimated cash, or +25%.
+
+Shielding isn't offered: the API call for it claims you watched an ad.
+
+It's off unless you switch it on, and even then **nothing reaches LaLiga
+until you turn off dry run**:
+
+1. **Every tap re-checks LaLiga live.** Is the player still listed? Is the
+   clause the same and unshielded? Do you have the cash? Then it tells you
+   exactly what would happen, with Confirm and Cancel.
+2. **A Confirm button works once, and only for 2 minutes.** Right before
+   sending, everything is checked again; if anything changed, nothing is
+   done.
+3. **With `FANTASYBOT_DRY_RUN=true` (the default)**, confirming only shows
+   the exact request FantasyBot would have sent. Use this to try it out.
+4. **With dry run off, the first real action of each kind asks a second
+   time** ("this would be your first real clause steal… do it for real?").
+5. **Hard limits apply.** Each real action is capped at
+   `FANTASYBOT_ACTION_MAX_MONEY` (20M by default), real actions at
+   `FANTASYBOT_ACTION_DAILY_LIMIT` per day (5), and nothing happens while
+   writes are frozen.
+6. **Only your private chat with the bot is obeyed;** everything else is
+   ignored without a reply. Every confirmed action is in `./fb actions log`.
+
+**Trying it (test mode).** In `fantasybot.env`, set `FANTASYBOT_ACTIONS=on`
+and leave `FANTASYBOT_DRY_RUN=true`. Then:
+
+```bash
+./fb listen start
+```
+
+Send `/briefing` to your bot (or wait for the morning one), tap a button,
+and confirm. You'll see the request that would have been sent. `/status`
+shows the mode and today's count.
+
+**Going live, when you're happy.** Set `FANTASYBOT_DRY_RUN=false`, then:
+
+```bash
+./fb listen restart
+```
+
+Your first real action of each kind will ask twice.
+
+**Stopping it:**
+
+```bash
+./fb listen stop
+```
+
+LaLiga's terms likely aren't keen on automation. Every action here is
+started by you, one tap at a time, so it's no different from using the app.
+That's deliberate; there's no auto-pilot.
+
 ## Getting your LaLiga token
 
 LaLiga retired email/password login for third-party apps, so the first
@@ -329,6 +396,10 @@ as unset.
 | `FANTASYBOT_REFRESH_TOKEN_WARN_DAYS` | `3` | warn this long before the refresh token expires |
 | `FANTASYBOT_REQUEST_DELAY` | `0.5` | seconds between API calls in the health check and briefing |
 | `FANTASYBOT_TIMEZONE` | `Europe/Madrid` | timezone for times in the briefing and alerts |
+| `FANTASYBOT_ACTIONS` | `off` | `on` offers action buttons on Telegram (needs `./fb listen start`) |
+| `FANTASYBOT_ACTION_KINDS` | `lineup,bid,steal,raise` | which actions to offer |
+| `FANTASYBOT_ACTION_MAX_MONEY` | `20000000` | the most one real action may spend |
+| `FANTASYBOT_ACTION_DAILY_LIMIT` | `5` | real actions allowed per day |
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
@@ -361,6 +432,12 @@ encryption key and the Telegram bot token. What's done about it:
 - **Writes are guarded.** They're dry runs by default, refused while writes
   are frozen, never retried after a failure, and IDs can't rewrite the
   request path.
+- **Telegram actions are fenced in.** They're off by default and answer only
+  your private chat. Every step is re-checked against LaLiga, confirmations
+  are single-use and expire after 2 minutes, real actions are capped per
+  action and per day, and every attempt is logged. A stolen bot token alone
+  can't trigger anything: commands must come from your own Telegram
+  account.
 - **Captured responses are protected.** Saved fixtures are anonymised,
   mode 600, and git-ignored.
 

@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 
 from . import ATTRIBUTION, __version__
+from .actions.flow import ActionCenter, listen
+from .actions.store import ActionStore
 from .alerts import LogAlerter, telegram_recent_chats
 from .api import FantasyClient
 from .auth import (
@@ -28,9 +30,10 @@ from .fixtures import FixtureRecorder
 from .healthcheck import HealthCheck, run_and_alert
 from .redact import redact
 from .runtime import Runtime, open_runtime
-from .scout.briefing import BriefingError, run_briefing
+from .scout.briefing import BriefingError, LeagueView, briefing
 from .scout.guard import run_guard
 from .scout.history import PriceHistory
+from .telegram import TelegramBot
 
 log = logging.getLogger("fantasybot")
 
@@ -304,13 +307,65 @@ async def cmd_telegram(rt: Runtime, args: argparse.Namespace) -> int:
     return 0 if sent else 1
 
 
+def telegram_bot(rt: Runtime) -> TelegramBot | None:
+    token = rt.settings.resolved_telegram_token()
+    if not token or not rt.settings.telegram_chat_id:
+        return None
+    return TelegramBot(rt.http, token, rt.settings.telegram_api_base)
+
+
+def action_store(rt: Runtime) -> ActionStore:
+    return ActionStore(rt.settings.state_dir / "actions.sqlite")
+
+
 async def cmd_briefing(rt: Runtime, args: argparse.Namespace) -> int:
     try:
-        messages = await run_briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send)
+        messages, view = await briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send)
     except BriefingError as exc:
         print(f"Briefing failed: {exc}", file=sys.stderr)
         return 1
     print("\n\n".join(messages))
+    bot = telegram_bot(rt)
+    if not args.no_send and rt.settings.actions and bot is not None:
+        with action_store(rt) as store:
+            offered = await ActionCenter(rt.settings, rt.client, bot, store).offer(view)
+        print(f"\nOffered {offered} action(s) on Telegram.")
+    return 0
+
+
+async def cmd_listen(rt: Runtime, args: argparse.Namespace) -> int:
+    if not rt.settings.actions:
+        print("Acting from Telegram is off. Set FANTASYBOT_ACTIONS=on to try it (with "
+              "FANTASYBOT_DRY_RUN=true, nothing is sent to LaLiga).", file=sys.stderr)
+        return 2
+    bot = telegram_bot(rt)
+    if bot is None:
+        print("Telegram isn't set up: it needs the bot token and FANTASYBOT_TELEGRAM_CHAT_ID.",
+              file=sys.stderr)
+        return 2
+
+    async def fresh_briefing() -> LeagueView:
+        _, view = await briefing(rt.client, rt.settings, rt.alerter)
+        return view
+
+    with action_store(rt) as store:
+        center = ActionCenter(rt.settings, rt.client, bot, store, briefing=fresh_briefing)
+        mode = "dry run: confirmed actions are only simulated" if rt.settings.dry_run else "LIVE"
+        log.info("listening for Telegram commands (%s)", mode)
+        await listen(center, bot, store, once=args.once)
+    return 0
+
+
+def cmd_actions_log(settings: Settings) -> int:
+    with ActionStore(settings.state_dir / "actions.sqlite") as store:
+        rows = store.executions()
+    if not rows:
+        print("No actions yet.")
+    for r in rows:
+        mode = "dry run" if r["dry_run"] else "LIVE"
+        req = r["request"] or {}
+        print(f"{r['at']}  {r['kind']:<7} {mode:<8} {r['outcome']:<10} {req.get('method', '')} "
+              f"{req.get('url', '')} {req.get('body', '')}")
     return 0
 
 
@@ -376,6 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
     guard.add_argument("--hours", type=float, default=24.0,
                        help="start warning this many hours before kickoff (default 24)")
     sub.add_parser("snapshot", help="record today's player values in the price history")
+    lis = sub.add_parser("listen", help="answer Telegram buttons and commands (needs FANTASYBOT_ACTIONS=on)")
+    lis.add_argument("--once", action="store_true", help="handle one batch of updates, then exit")
+    act = sub.add_parser("actions", help="actions taken from Telegram")
+    act_sub = act.add_subparsers(dest="actions_command", required=True)
+    act_sub.add_parser("log", help="every confirmed action, simulated or real")
 
     sub.add_parser("unfreeze", help="lift the write freeze without importing a new token")
     sub.add_parser("about", help="version, license and credits")
@@ -398,6 +458,8 @@ async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
             return await cmd_guard(rt, args)
         if args.command == "snapshot":
             return await cmd_snapshot(rt, args)
+        if args.command == "listen":
+            return await cmd_listen(rt, args)
     raise AssertionError(f"unhandled command {args.command}")
 
 
@@ -418,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
             cleared = FreezeGuard(settings.freeze_path).clear()
             print("Write freeze lifted." if cleared else "Writes were not frozen.")
             return 0
+        if args.command == "actions":
+            return cmd_actions_log(settings)
         if args.command == "telegram" and args.telegram_command == "set-token":
             return cmd_telegram_set_token(settings)
         if args.command == "auth" and args.auth_command == "status":

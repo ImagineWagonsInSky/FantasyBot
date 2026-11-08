@@ -407,17 +407,21 @@ class FantasyClient:
         return await self._write("decline_offer", "POST", f"{self._cmp}/league/{_seg(league_id)}"
                                  f"/market/{_seg(market_id)}/offer/{_seg(offer_id)}/reject")
 
-    async def increase_buyout_clause(self, league_id: Id, player_id: Id, factor: Any,
+    async def increase_buyout_clause(self, league_id: Id, player_team_id: Id, factor: Any,
                                      value_to_increase: int) -> WriteResult:
+        """Raise one of your clauses. LaLigaApp sends the playerTeamId as playerId,
+        factor 2.0, and the clause increase; you pay half of the increase."""
         return await self._write("increase_buyout_clause", "PUT",
                                  f"{self._cmp}/league/{_seg(league_id)}/buyout/player",
-                                 {"factor": factor, "playerId": player_id,
+                                 {"factor": factor, "playerId": player_team_id,
                                   "valueToIncrease": value_to_increase})
 
-    async def pay_buyout_clause(self, league_id: Id, player_id: Id,
+    async def pay_buyout_clause(self, league_id: Id, player_team_id: Id,
                                 buyout_clause_to_pay: int) -> WriteResult:
+        """Take a rival's player by paying his clause. The path takes the
+        playerTeamId (as LaLigaApp's Clauses page sends it)."""
         return await self._write("pay_buyout_clause", "POST",
-                                 f"{self._cmp}/league/{_seg(league_id)}/buyout/{_seg(player_id)}/pay",
+                                 f"{self._cmp}/league/{_seg(league_id)}/buyout/{_seg(player_team_id)}/pay",
                                  {"buyoutClauseToPay": buyout_clause_to_pay})
 
     async def sell_player_to_market(self, league_id: Id, player_id: Id, sale_price: int) -> WriteResult:

@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     request_delay: float = 0.5  # pause between health-check calls (API rate-limits)
     timezone: str = "Europe/Madrid"  # how times are shown; LaLiga's own clock by default
 
+    # Acting from Telegram (see README, "Acting from Telegram"). Off unless switched on;
+    # with dry_run still on, confirmed actions are only simulated.
+    actions: bool = False
+    action_kinds: str = "lineup,bid,steal,raise"
+    action_max_money: int = 20_000_000  # per action: a bid, a clause, a raise's cost
+    action_daily_limit: int = 5  # real (not dry-run) actions per day
+    confirm_seconds: int = 120  # how long a Confirm button stays valid
+
     # Storage and secrets.
     state_dir: Path = Field(default_factory=_default_state_dir)
     token_key: SecretStr | None = None
@@ -107,6 +115,11 @@ class Settings(BaseSettings):
     @property
     def freeze_path(self) -> Path:
         return self.state_dir / "frozen.json"
+
+    def enabled_actions(self) -> set[str]:
+        if not self.actions:
+            return set()
+        return {k.strip() for k in self.action_kinds.split(",") if k.strip()}
 
     def display_tz(self) -> tzinfo:
         try:

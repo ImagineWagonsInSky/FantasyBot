@@ -65,6 +65,10 @@ Everyday
   rebuild                  rebuild the image after `git pull`
   schedule remove          stop the daily run
 
+Acting from Telegram (off unless FANTASYBOT_ACTIONS=on; see README)
+  listen start|stop|restart|status|logs   the always-on listener for buttons and commands
+  actions log              every confirmed action, simulated or real
+
 Anything else is passed to fantasybot inside the container, e.g.
   ./fb auth refresh        ./fb unfreeze        ./fb about
 EOF
@@ -285,6 +289,21 @@ RandomizedDelaySec=5min"
   esac
 }
 
+cmd_listen() {
+  need_docker
+  case "$1" in
+    start)
+      compose --profile listener up -d listener
+      echo "Listening. Tap buttons under the briefing, or send /briefing or /status to your bot."
+      echo "Changed fantasybot.env? Run ./fb listen restart." ;;
+    restart) compose --profile listener up -d --force-recreate listener ;;
+    stop) compose --profile listener stop listener && compose --profile listener rm -f listener ;;
+    status) compose --profile listener ps listener ;;
+    logs) compose --profile listener logs --tail 50 listener ;;
+    *) echo "Usage: ./fb listen start|stop|restart|status|logs" >&2; exit 2 ;;
+  esac
+}
+
 show_last_run() {
   if [ -f "$LOG" ]; then
     echo "--- last run ($LOG):"
@@ -301,6 +320,7 @@ case "${1:-help}" in
   fixtures) cmd_fixtures ;;
   run-daily) cmd_run_daily ;;
   run-guard) cmd_run_guard ;;
+  listen) shift; cmd_listen "${1:-status}" ;;
   schedule) shift; cmd_schedule "$@" ;;
   logs) tail -n 80 "$LOG" ;;
   auth)
