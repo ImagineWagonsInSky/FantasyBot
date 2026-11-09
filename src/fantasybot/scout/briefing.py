@@ -46,7 +46,16 @@ from .analysis import (
 from .cash import DRIFT_LIMIT, CashEstimates, estimate
 from .difficulty import HORIZON, FixtureModel, club_records, player_club
 from .history import PriceHistory
-from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label
+from .model import COACH, DEF, FWD, GK, MID, POSITION_LABELS, FixtureOutlook, position_label, position_of
+from .rivals import (
+    Intel,
+    build_profiles,
+    competition,
+    gap_story,
+    last_finished,
+    projected_line,
+    swing_targets,
+)
 from .selling import (
     SQUAD_LIMIT,
     OfferVerdict,
@@ -102,6 +111,7 @@ class LeagueView:
     lineups: dict[str, LineupEntry] = field(default_factory=dict)  # player id -> probable lineup entry
     lineup_clubs: int = 0  # clubs whose probable lineup was read
     unmatched: list[tuple[str, str]] = field(default_factory=list)  # (club id, name) of starters not found
+    intel: Intel | None = None  # what the rivals are up to (rivals.py)
 
     def keep(self) -> list[SquadPlayer]:
         """The best XI plus coach: who not to sell."""
@@ -337,7 +347,62 @@ async def gather(client: FantasyClient, settings: Settings, now: datetime, *, ri
         for ptid in offer_ids_to_check(view.market, view.my_squad, me.team.id)[:SQUAD_LIMIT]:
             view.offers[str(ptid)] = await fetch(
                 "offers", lambda p=ptid: client.get_player_offer(league_id, p), [])
+    if rivals and activity:
+        view.intel = await gather_intel(client, settings, view, fetch, sleep)
     return view
+
+
+async def gather_intel(client: FantasyClient, settings: Settings, view: LeagueView,
+                       fetch: Callable[..., Awaitable[Any]],
+                       sleep: Callable[[float], Awaitable[None]]) -> Intel:
+    """The rivals' picture: profiles, bid competition, swing steals, trend (rivals.py)."""
+    saved = {}
+    for e in view.standing:
+        if same_id(e.team.id, view.me.team.id):
+            continue
+        try:  # LaLiga may not show a rival's saved lineup; that's fine, it's optional
+            lineup = await client.get_current_lineup(e.team.id)
+        except (ApiError, ResponseShapeError, AuthUnavailable, ValueError):
+            lineup = None
+        finally:
+            if settings.request_delay:
+                await sleep(settings.request_delay)
+        squad = view.squads.get(str(e.team.id), [])
+        current = read_lineup(lineup, squad) if lineup is not None and squad else None
+        if current is not None and len(current.members) >= 9:  # really theirs, and mostly set
+            saved[str(e.team.id)] = current
+    with PriceHistory(settings.state_dir / "history.sqlite") as store:
+        if view.week is not None:
+            stored = store.weeks_stored()
+            for w in range(max(1, view.week - 5), view.week):
+                if w in stored and w != view.week - 1:  # the last one may still get late points
+                    continue
+                rows = await fetch(f"jornada {w} standings",
+                                   lambda w=w: client.get_league_ranking_by_week(view.league_id, w), None)
+                if rows:
+                    store.store_week(w, {str(r.team.id): float(r.points or 0) for r in rows})
+        trend = store.weekly_points()
+        profiles = build_profiles(view.standing, view.me, view.squads, store.activity(), view.cash,
+                                  view.market, view.formations, view.now, store.value_near, saved)
+        recap = last_finished(trend, view.week)
+        if recap is not None and store.note("recap_week") == str(recap):
+            recap = None
+    team_value = view.me.teamValue or view.me.team.teamValue
+    limit = credit_limit(view.balance, team_value)
+    picks = rank_market(view.market, view.details, view.week, view.balance, limit, {}, {},
+                        exclude_team=view.me.team.id, outlook=view.outlook_fn())
+    contested = {}
+    for pick in [p for p in picks if p.projection.outlook > 0][:8]:
+        contested[str(pick.item.id)] = competition(pick.item, pick.player.display_name,
+                                                   position_of(pick.player), pick.price, profiles, limit)
+    rivals = [Rival(e, view.rank_of(e), view.squads.get(str(e.team.id), []))
+              for e in view.standing if not same_id(e.team.id, view.me.team.id)]
+    swings = swing_targets(rivals, profiles, view.my_squad, view.balance, view.formations, view.now)
+    mine = read_lineup(view.lineup, view.my_squad) if view.my_squad else None
+    plan = best_lineup(view.my_squad, view.formations) if view.my_squad else None
+    my_projection = (mine.expected if mine is not None and mine.filled >= 11
+                     else plan.expected if plan else None)
+    return Intel(profiles, contested, swings, my_projection, trend, recap)
 
 
 # -- rendering -----------------------------------------------------------------
@@ -526,6 +591,84 @@ def _data_check(view: LeagueView) -> str:
                 line += ". Check the lineup deadline in the app"
         lines.append(line)
     return "\n".join(lines[:9])
+
+
+def _ago(view: LeagueView, when: datetime | None) -> str:
+    if when is None:
+        return "no moves seen"
+    days = (view.now - when).days
+    return "last move today" if days < 1 else f"last move {days}d ago"
+
+
+def _rivals(view: LeagueView) -> str:
+    intel = view.intel
+    if intel is None or not intel.profiles:
+        return ""
+    lines = ["🕵️ Rivals"]
+    projected = projected_line(intel)
+    if projected:
+        saved = any(r.saved_xi is not None for r in intel.profiles)
+        lines.append(f" Next jornada, projected: {projected}"
+                     + (" (* their saved lineup)" if saved else " (each fielding their best XI)"))
+    recent = sorted(w for w in intel.trend if view.week is None or w < view.week)[-3:]
+    if recent:
+        me = view.my_team_id
+
+        def edge(team: str) -> float:  # their points minus yours over those jornadas
+            return sum(intel.trend[w].get(team, 0) - intel.trend[w].get(me, 0) for w in recent)
+
+        diffs = " · ".join(f"{r.name} {edge(r.team_id):+.0f}" for r in intel.profiles)
+        lines.append(f" Last {len(recent)} jornadas, their points minus yours: {diffs}")
+    for r in intel.profiles:
+        bits = [f"#{r.rank} ({r.gap:+.0f} vs you)"]
+        if r.cash is not None:
+            bits.append(f"≈{money(r.cash)}")
+        if r.need_text():
+            bits.append(r.need_text())
+        if r.injured:
+            bits.append("out: " + ", ".join(r.injured))
+        if r.overpay is not None:
+            bits.append(f"pays {r.overpay:+.0%} over value ({len(r.premiums)} buys)")
+        bits.append(_ago(view, r.last_move) + (f", {r.moves} moves in 14d" if r.moves >= 3 else ""))
+        if r.steals_made:
+            bits.append(f"{r.steals_made} clause steal{'s' if r.steals_made > 1 else ''}"
+                        + (f" ({r.steals_from_you} from you)" if r.steals_from_you else ""))
+        if r.listings:
+            bits.append("selling " + ", ".join(f"{i.playerMaster.display_name} {money(i.salePrice)}"
+                                               for i in r.listings[:2]))
+        line = f" • {r.name}: " + " · ".join(bits)
+        if r.in_red:
+            line += " · ⚠ likely in the red: scores 0 unless they sell, so their players may hit the market"
+        lines.append(line)
+    for c in [c for c in intel.competition.values() if c.bidders][:3]:
+        who = ", ".join(f"{b.rival.name} ({'; '.join(b.reasons)})" for b in c.bidders)
+        tail = (f"bid {money(c.to_win)} to beat them" if c.to_win
+                else "they can outbid your max" if c.out_of_reach else "")
+        lines.append(f" Bidding on {c.name}: {who}" + (f" · {tail}" if tail else ""))
+    if intel.swings:
+        lines.append(" Best clause steals by swing: " + " · ".join(
+            f"{s.target.player.name} from {s.target.rival.name} {s.swing:+.1f} xP/j "
+            f"(you +{s.your_gain:.1f}" + (f", them −{s.their_loss:.1f}" if s.their_loss else "")
+            + f") for {money(s.target.cost)}"
+            for s in intel.swings[:3]))
+    return "\n".join(lines)
+
+
+def _recap(view: LeagueView) -> str:
+    intel = view.intel
+    if intel is None or intel.recap_week is None:
+        return ""
+    week = intel.recap_week
+    points = intel.trend.get(week, {})
+    me = view.my_team_id
+    scores = [f"You {points.get(me, 0):.0f}"] + [f"{r.name} {points.get(r.team_id, 0):.0f}"
+                                                 for r in intel.profiles]
+    gaps = []
+    for r in intel.profiles:
+        before, now = gap_story(intel.trend, week, me, r.team_id, r.gap)
+        gaps.append(f"{r.name} {before:+.0f} → {now:+.0f}")
+    return (f"📊 Jornada {week} recap: " + " · ".join(scores)
+            + "\n Gap (their points minus yours): " + " · ".join(gaps))
 
 
 def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: dict[str, int]) -> str:
@@ -733,6 +876,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
     days = len(history.days())
     sections = [
         _header(view, team_value),
+        _recap(view),
         _lineup_and_readiness(view),
         _lineups(view),
         _odds(view),
@@ -741,6 +885,7 @@ def compose(view: LeagueView, history: PriceHistory) -> list[str]:
         _clauses(view),
         _exposure(view),
         _selling(view, history),
+        _rivals(view),
         _movers(view, history, days),
         _rival_moves(view),
     ]
@@ -781,6 +926,8 @@ async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, 
                     history.store_offer(today, offer.id, sale.player.player.id if sale.player else None,
                                         offer.money, sale.value, offer.bidderTeam is None)
         messages = compose(view, history)
+        if send and view.intel is not None and view.intel.recap_week is not None:
+            history.set_note("recap_week", str(view.intel.recap_week))  # recap each jornada once
     if send:
         for message in messages:
             await alerter.send(message)

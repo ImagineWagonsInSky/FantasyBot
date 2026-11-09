@@ -65,6 +65,16 @@ CREATE TABLE IF NOT EXISTS cash_offsets (
     day    TEXT PRIMARY KEY,
     offset INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS weekly_points (
+    week    INTEGER NOT NULL,
+    team_id TEXT    NOT NULL,
+    points  REAL,
+    PRIMARY KEY (week, team_id)
+);
+CREATE TABLE IF NOT EXISTS notes (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -101,6 +111,44 @@ class PriceHistory:
         self._db.executemany("INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
         self._db.commit()
         return len(rows)
+
+    def value_near(self, player_id: str, day: date, within: int = 3) -> int | None:
+        """A player's recorded value on a day: the latest snapshot up to `within` days
+        before it, or failing that the first one up to a day after."""
+        row = self._db.execute(
+            "SELECT market_value FROM snapshots WHERE player_id = ? AND day <= ? AND day >= ? "
+            "ORDER BY day DESC LIMIT 1",
+            (player_id, day.isoformat(), (day - timedelta(days=within)).isoformat())).fetchone()
+        if row is None:
+            row = self._db.execute(
+                "SELECT market_value FROM snapshots WHERE player_id = ? AND day > ? AND day <= ? "
+                "ORDER BY day LIMIT 1",
+                (player_id, day.isoformat(), (day + timedelta(days=1)).isoformat())).fetchone()
+        return int(row[0]) if row and row[0] else None
+
+    # -- weekly team points (for trends and the jornada recap) ------------------
+
+    def store_week(self, week: int, points: dict[str, float]) -> None:
+        self._db.executemany("INSERT OR REPLACE INTO weekly_points VALUES (?, ?, ?)",
+                             [(week, team, pts) for team, pts in points.items()])
+        self._db.commit()
+
+    def weeks_stored(self) -> set[int]:
+        return {r[0] for r in self._db.execute("SELECT DISTINCT week FROM weekly_points").fetchall()}
+
+    def weekly_points(self) -> dict[int, dict[str, float]]:
+        out: dict[int, dict[str, float]] = {}
+        for week, team, pts in self._db.execute("SELECT week, team_id, points FROM weekly_points"):
+            out.setdefault(week, {})[team] = pts or 0.0
+        return out
+
+    def note(self, key: str) -> str | None:
+        row = self._db.execute("SELECT value FROM notes WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_note(self, key: str, value: str) -> None:
+        self._db.execute("INSERT OR REPLACE INTO notes VALUES (?, ?)", (key, value))
+        self._db.commit()
 
     def days(self) -> list[date]:
         rows = self._db.execute("SELECT DISTINCT day FROM snapshots ORDER BY day").fetchall()

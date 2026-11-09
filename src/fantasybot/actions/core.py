@@ -115,7 +115,10 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
     if "steal" in kinds:
         rivals = [Rival(e, view.rank_of(e), view.squads.get(str(e.team.id), []))
                   for e in view.standing if not same_id(e.team.id, view.me.team.id)]
-        for t in clause_radar(rivals, view.balance, now).affordable[:3]:
+        # Ordered by points swing when the rivals' picture is in, by your gain otherwise.
+        targets = ([w.target for w in view.intel.swings] if view.intel is not None
+                   else clause_radar(rivals, view.balance, now).affordable)
+        for t in targets[:3]:
             out.append(Suggestion("steal", f"steal {t.player.name}", {
                 **base,
                 "owner_team_id": t.rival.entry.team.id, "owner": t.rival.name,
@@ -136,17 +139,25 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
                 continue
             if not (pick.payable_cash or pick.payable_credit):
                 continue
-            amounts = sorted({_round_up(pick.price * s, 10_000) for s in BID_STEPS})
-            if limit is not None:
-                amounts = [a for a in amounts if a <= limit]
+            amounts = {_round_up(pick.price * s, 10_000) for s in BID_STEPS}
+            contest = view.intel.competition.get(str(pick.item.id)) if view.intel is not None else None
+            to_win = contest.to_win if contest is not None else None
+            if to_win is not None:
+                amounts.add(to_win)  # what should beat the rivals likely to bid
+            amounts = sorted(a for a in amounts if limit is None or a <= limit)
             if not amounts:
                 continue
             name = pick.player.display_name
+
+            def label(amount: int, first: bool, name: str = name, to_win: int | None = to_win) -> str:
+                text = f"🛒 {name} {money(amount)}" if first else money(amount)
+                return text + (" ⚔" if amount == to_win else "")
+
             expires = parse_time(pick.item.expirationDate) or now + timedelta(hours=12)
             out.append(Suggestion("bid", f"bid on {name}", {
                 **base, "market_id": pick.item.id, "player_id": pick.player.id, "name": name,
-                "amounts": amounts,
-                "options": [f"🛒 {name} {money(amounts[0])}"] + [money(a) for a in amounts[1:]],
+                "amounts": amounts, "to_win": to_win,
+                "options": [label(a, i == 0) for i, a in enumerate(amounts)],
             }, expires))
             offered += 1
 

@@ -148,6 +148,13 @@ class FakeLaLiga:
             pages = self.data["league_activity_pages"]
             index = int(segments[-1])
             body = pages[index] if index < len(pages) else {"elements": []}
+        if name == "current_lineup" and "current_lineup_by_id" in self.data:
+            team = segments[segments.index("teams") + 1]
+            if team not in self.data["current_lineup_by_id"]:
+                return httpx.Response(403, json={"message": "not your team"})
+            body = self.data["current_lineup_by_id"][team]
+        if name == "league_ranking_by_week" and "ranking_by_week" in self.data:
+            body = self.data["ranking_by_week"].get(segments[-1], [])
         if name == "matchday" and "matchday_by_week" in self.data:
             body = self.data["matchday_by_week"].get(request.url.params.get("weekNumber"), [])
         return httpx.Response(200, content=json.dumps(body),
