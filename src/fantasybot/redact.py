@@ -11,6 +11,8 @@ _TELEGRAM = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b")
 # Bearer headers that slipped into an error message.
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}")
 
+# Anthropic API keys.
+_ANTHROPIC = re.compile(r"sk-ant-[A-Za-z0-9_-]{10,}")
 # API keys in a URL's query string (The Odds API's apiKey=) or a token header.
 _QUERY_KEY = re.compile(r"(?i)\b(api_?key|x-auth-token|token|key)([=:]\s*)[A-Za-z0-9._~+/-]{12,}")
 
@@ -21,6 +23,7 @@ def redact(text: str, *secrets: str | None) -> str:
     for secret in secrets:
         if secret and len(secret) >= 8:
             text = text.replace(secret, REDACTED)
+    text = _ANTHROPIC.sub(REDACTED, text)
     text = _BEARER.sub(f"Bearer {REDACTED}", text)
     text = _QUERY_KEY.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
     text = _JWT.sub(REDACTED, text)

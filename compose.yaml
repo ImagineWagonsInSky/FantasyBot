@@ -3,7 +3,7 @@
 # Two named volumes hold everything that persists:
 #   state    the encrypted LaLiga session and the write-freeze marker
 #   secrets  the key that decrypts it, the Telegram bot token and the
-#            optional outside-data keys (odds, football-data.org)
+#            optional keys (odds, football-data.org, Anthropic for the daily plan)
 # They are kept apart so one can be backed up or inspected without the other.
 # Named volumes live inside Docker, not in your home folder, so Time Machine,
 # iCloud or Dropbox never pick them up.
@@ -33,6 +33,7 @@ x-hardening: &hardening
     FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE: /secrets/telegram_bot_token
     FANTASYBOT_ODDS_API_KEY_FILE: /secrets/odds_api_key
     FANTASYBOT_FOOTBALL_DATA_TOKEN_FILE: /secrets/football_data_token
+    FANTASYBOT_ANTHROPIC_API_KEY_FILE: /secrets/anthropic_api_key
 
 services:
   # Everyday runs: health check, auth import/status, telegram test.

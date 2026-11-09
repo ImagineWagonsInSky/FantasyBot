@@ -29,6 +29,10 @@ when it doesn't.
   on Telegram, and an hourly guard that only speaks up when the next jornada
   would cost you points. Both only read from LaLiga: they recommend, and you
   act in the app. See [The daily briefing](#the-daily-briefing).
+- **The daily plan** (optional). Claude reads the morning's data and sends
+  a short plan instead of the long briefing: what to do today, best first,
+  each with its button. Your friends' names are never sent. See
+  [The daily plan](#the-daily-plan).
 - **Outside data** (optional, free). Bookmakers' odds for fixture difficulty,
   real fixtures and results to catch where LaLiga Fantasy's calendar is
   wrong, and probable lineups for who's likely to start. See
@@ -229,6 +233,20 @@ acting on today:
   now worth more than the asking price, or he's in your best XI). Bench
   players worth selling: to cover a negative balance, falling in value,
   injured, or hardly scoring.
+- **Rivals.** For each friend: rank and gap, estimated cash, positions
+  they're short of, injured regulars, how much over value they usually pay
+  (from their purchases and the bot's price history), how active they are,
+  clauses they've stolen (and from whom), what they're selling, and a
+  warning when they're likely in the red (0 points unless they sell, so
+  their players may reach the market). Plus: projected points for the next
+  jornada, their points minus yours over the last three, who is likely to
+  bid on the best market players and a bid that should beat them (their
+  usual premium + 1%, never more than they can pay), and clause steals by
+  points **swing**: your gain over the starter he'd replace plus what the
+  owner loses, counted in full against rivals above you. Bid buttons gain
+  that amount (marked ⚔), and steal buttons follow the swing order.
+- **Jornada recap**, the first morning after each jornada: everyone's
+  points and how each gap moved.
 - **Price moves.** Your players' and the league's biggest risers and fallers
   since yesterday. LaLiga's API only gives today's values, so the bot keeps
   its own history; trends appear from the second day.
@@ -303,6 +321,66 @@ API. Check anything marked "guide" in the app before relying on it.
 | Recently signed players are locked from clause steals for a while; the API gives the exact unlock time | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), the API |
 | Shield: free, 2 players, 24h (48h with Premium), only on open clauses | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), [DAZN](https://www.dazn.com/es-ES/news/f%C3%BAtbol/que-es-blindaje-laliga-fantasy-como-funciona/p2wqlqgud2ls1s0o2z5ypimpl) |
 | Points come from Opta stats plus a 0–4 bonus (`marca_points` in the API) | [LaLiga](https://www.laliga.com/en-FR/news/a-new-version-of-laliga-fantasy-launches-with-100percent-objective-scoring), the API |
+
+## The daily plan
+
+Instead of the full briefing, one short message: what to do today, best
+first, each with a reason and its button. The full briefing is one
+`/details` away.
+
+```
+🧠 Today's plan · jornada 12 starts Sat 14 Nov 21:00
+Ana is 200 ahead: take Star from her and win Isco before 13:20.
+1. Steal Star from Ana (3.00M): +6 xP a jornada, and it costs the leader.
+2. Bid 1.28M on Isco: Ana and Bea need a MID; this beats their usual bids.
+3. Shield Fwd A and Def D in the app (in the app): Carl can afford both.
+/details for the full briefing
+```
+
+How it works:
+
+- The bot still works out everything that's possible (the same suggestions
+  as the buttons, plus things only you can do in the app, like shields).
+  Claude only picks among them, puts them in order and says why. Its answer
+  must be JSON in a fixed shape, and only candidates from the list are kept,
+  one option per player, five at most.
+- **Your friends stay anonymous.** Managers become "Rival A/B/C" (by
+  rank). Their team names, the league's name, IDs and the activity feed's
+  text are never sent, and the names are put back in the answer.
+- **It can't act.** Every pick you can act on is the same button as before:
+  LaLiga is checked again and you confirm. Text in the data (player and club
+  names come from other sites) is treated as data, and the answer can only
+  select from the list, so nothing in it can make anything happen.
+- **If it fails** (no credits, network, a refusal), the full briefing and its
+  buttons go out as before, with a line saying why there's no plan.
+- If Claude declines to answer, the API retries the request on a fallback
+  model (Anthropic's server-side fallback, `fallbacks: "default"`), so a
+  plan still arrives.
+
+The model is **Claude Opus 5.5 at low effort**: low effort makes it think
+less, so it's quick and cheap while keeping its judgment. One call a day
+costs roughly $0.03–0.10, about $1–3 a month. Each run logs the real
+tokens and cost, and `./fb briefing --no-send` prints them.
+
+Set up:
+
+1. Create an account at <https://console.anthropic.com>, add a little
+   prepaid credit, and set a monthly spend limit (Settings → Limits). This
+   is separate from a Claude.ai subscription.
+2. Create an API key (Settings → API keys).
+3. `./fb secret set anthropic_api_key` and paste it. It isn't shown on
+   screen and goes in the secrets volume, like the other keys.
+4. `./fb healthcheck --no-alert` shows `daily_plan` OK (that check spends
+   nothing).
+5. `./fb briefing --no-send` prints the plan and, under it, the full
+   briefing, so you can compare. Add `--no-plan` to skip the call.
+
+`/details` is answered by the listener (`./fb listen start`), so only the
+plan is sent when the listener is in use. Without it, or with
+`FANTASYBOT_BRIEFING_STYLE=both`, the full briefing follows the plan.
+`FANTASYBOT_ADVISOR=false` turns the plan off; `FANTASYBOT_ADVISOR_MODEL`
+and `FANTASYBOT_ADVISOR_EFFORT` change the model (e.g. `claude-haiku-5-5`,
+cheaper but weaker at trade-offs) and the effort.
 
 ## Outside data
 
@@ -486,7 +564,8 @@ and leave `FANTASYBOT_DRY_RUN=true`. Then:
 
 Send `/briefing` to your bot (or wait for the morning one), tap a button,
 and confirm. You'll see the request that would have been sent. `/status`
-shows the mode and today's count.
+shows the mode, whether the daily plan is on, and today's count;
+`/details` sends the full briefing behind the latest plan.
 
 **Going live, when you're happy.** Set `FANTASYBOT_DRY_RUN=false`, then:
 
@@ -582,6 +661,11 @@ as unset.
 | `FANTASYBOT_ODDS_API_KEY_FILE` | | file holding The Odds API key (set by Docker; `./fb secret set odds_api_key`) |
 | `FANTASYBOT_FOOTBALL_DATA_TOKEN_FILE` | | file holding the football-data.org token (set by Docker; `./fb secret set football_data_token`) |
 | `FANTASYBOT_LINEUPS` | `true` | probable lineups from futbolfantasy.com |
+| `FANTASYBOT_ANTHROPIC_API_KEY_FILE` | | file holding the Anthropic API key (set by Docker; `./fb secret set anthropic_api_key`) |
+| `FANTASYBOT_ADVISOR` | `true` | the daily plan, once a key is stored |
+| `FANTASYBOT_ADVISOR_MODEL` | `claude-opus-5-5` | the model that writes the plan |
+| `FANTASYBOT_ADVISOR_EFFORT` | `low` | `low`, `medium` or `high`: more thinking, more cost |
+| `FANTASYBOT_BRIEFING_STYLE` | `plan` | `plan`: the plan only, full briefing on `/details`; `both`: plan, then briefing |
 | `FANTASYBOT_ODDS_REGIONS` | `eu` | bookmaker regions to average (`eu`, `uk`; each extra region costs credits) |
 
 ## Security notes
@@ -620,6 +704,12 @@ encryption key and the Telegram bot token. What's done about it:
   account.
 - **Captured responses are protected.** Saved fixtures are anonymised,
   mode 600, and git-ignored.
+- **The daily plan sees no names.** Your friends become Rival A/B/C, and
+  their team names, IDs, the league's name and the activity feed's text are
+  never sent to Anthropic; only player and club names, numbers and the
+  candidate actions are. The answer can only pick from those candidates,
+  and you still confirm every action. The API key is redacted from logs and
+  errors like the others; set a spend limit on it in the console.
 - **Outside-data keys are kept like the bot token.** They're optional, live
   in the secrets volume (mode 600), and are redacted from errors and logs.
   They're read-only keys to public football data, so a leaked one costs

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -926,12 +927,28 @@ async def briefing(client: FantasyClient, settings: Settings, alerter: Alerter, 
                     history.store_offer(today, offer.id, sale.player.player.id if sale.player else None,
                                         offer.money, sale.value, offer.bidderTeam is None)
         messages = compose(view, history)
-        if send and view.intel is not None and view.intel.recap_week is not None:
-            history.set_note("recap_week", str(view.intel.recap_week))  # recap each jornada once
     if send:
+        remember(settings, view, messages)
         for message in messages:
             await alerter.send(message)
     return messages, view
+
+
+def remember(settings: Settings, view: LeagueView, messages: list[str]) -> None:
+    """After a briefing goes out: recap each jornada once, keep the text for /details."""
+    with PriceHistory(settings.state_dir / "history.sqlite") as history:
+        if view.intel is not None and view.intel.recap_week is not None:
+            history.set_note("recap_week", str(view.intel.recap_week))
+        history.set_note("last_briefing", json.dumps({"at": view.now.isoformat(), "messages": messages}))
+
+
+def last_briefing(settings: Settings) -> tuple[datetime, list[str]] | None:
+    with PriceHistory(settings.state_dir / "history.sqlite") as history:
+        raw = history.note("last_briefing")
+    if not raw:
+        return None
+    data = json.loads(raw)
+    return datetime.fromisoformat(data["at"]), list(data["messages"])
 
 
 async def run_briefing(client: FantasyClient, settings: Settings, alerter: Alerter, *,

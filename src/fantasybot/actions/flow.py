@@ -18,7 +18,7 @@ from ..api import ApiError, FantasyClient, ResponseShapeError, WriteResult
 from ..auth import AuthUnavailable, WritesFrozen
 from ..config import Settings
 from ..scout.analysis import SquadPlayer
-from ..scout.briefing import BriefingError, LeagueView
+from ..scout.briefing import BriefingError, LeagueView, last_briefing
 from ..telegram import Button, TelegramBot, TelegramError
 from .core import (
     KIND_NAMES,
@@ -37,9 +37,10 @@ from .store import ActionStore, Confirmation, Proposal
 
 log = logging.getLogger(__name__)
 
-BriefingFn = Callable[[], Awaitable[LeagueView]]
-HELP = ("Commands: /briefing (today's briefing with action buttons), /status (mode and limits), "
-        "/help. Buttons under a briefing suggest actions; each asks before doing anything.")
+BriefingFn = Callable[[], Awaitable[None]]  # makes and sends a fresh briefing (or plan)
+HELP = ("Commands: /briefing (a fresh plan or briefing with action buttons), /details (the full "
+        "briefing behind the latest plan), /status (mode and limits), /help. Buttons suggest "
+        "actions; each checks LaLiga again and asks before doing anything.")
 
 
 def _now() -> datetime:
@@ -88,6 +89,20 @@ class ActionCenter:
             [sell_suggestion(view, p, "covers your negative balance", now) for p in players],
             "List one of these to get back above 0? Nothing is sold until you accept an offer.")
 
+    async def offer_plan(self, text: str, picks: list[Any]) -> int:
+        """The daily plan, one button per pick you can act on (advisor.Pick)."""
+        now = self._clock()
+        kinds = self._settings.enabled_actions()
+        rows = []
+        for n, pick in enumerate(picks, 1):
+            s = pick.candidate.suggestion
+            if s is None or s.kind not in kinds:
+                continue  # done in the app, or an action you haven't switched on
+            p = self._store.add_proposal(s.kind, s.label, s.params, now, s.expires)
+            rows.append([Button(f"{n}. {pick.candidate.label}"[:64], f"p:{p.id}:{pick.candidate.option}")])
+        await self.say(f"{text}\n{self._mode_line()}" if rows else text, rows or None)
+        return len(rows)
+
     async def offer_suggestions(self, suggestions: list[Suggestion], intro: str) -> int:
         now = self._clock()
         rows = []
@@ -114,16 +129,25 @@ class ActionCenter:
         text = (message.get("text") or "").strip().split("@")[0]
         if text == "/briefing" and self._briefing is not None:
             try:
-                view = await self._briefing()
+                await self._briefing()
             except BriefingError as exc:
                 await self.say(f"Briefing failed: {exc}")
+        elif text == "/details":
+            stored = last_briefing(self._settings)
+            if stored is None:
+                await self.say("No briefing yet. Send /briefing for a fresh one.")
                 return
-            if not await self.offer(view):
-                await self.say("Nothing to act on right now.")
+            at, messages = stored
+            local = at.astimezone(self._settings.display_tz())
+            await self.say(f"📄 The full briefing from {local:%a %d %b %H:%M}:")
+            for message in messages:
+                await self.say(message)
         elif text == "/status":
             today = self._clock().date()
             kinds = ", ".join(sorted(self._settings.enabled_actions())) or "none"
-            await self.say(f"{self._mode_line()}\nActions on: {kinds}\n"
+            plan = (f"on ({self._settings.advisor_model}, {self._settings.advisor_effort} effort)"
+                    if self._settings.advisor_key() else "off")
+            await self.say(f"{self._mode_line()}\nDaily plan: {plan}\nActions on: {kinds}\n"
                            f"Per-action limit: {self._settings.action_max_money / 1e6:.1f}M · "
                            f"real actions today: {self._store.live_actions_on(today)} of "
                            f"{self._settings.action_daily_limit}")

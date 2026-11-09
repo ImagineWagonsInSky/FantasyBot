@@ -105,6 +105,17 @@ class Settings(BaseSettings):
     lineups: bool = True  # probable lineups from futbolfantasy.com
     futbolfantasy_base: str = "https://www.futbolfantasy.com"
 
+    # The daily plan (see README, "The daily plan"): Claude reads the briefing's data and
+    # picks what's worth doing. On once a key is stored; FANTASYBOT_ADVISOR=false turns it off.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_api_key_file: Path | None = None
+    advisor: bool = True
+    advisor_model: str = "claude-opus-5-5"
+    advisor_effort: str = "low"
+    # "plan": only the plan is sent, the full briefing on /details (needs the listener);
+    # "both": the plan, then the full briefing.
+    briefing_style: str = "plan"
+
     # Selling: who the daily relist suggests ("everyone", "bench" or "off"), and how far
     # above value an offer must be before the bot suggests taking it.
     shop_window: str = "everyone"
@@ -157,6 +168,9 @@ class Settings(BaseSettings):
             "no token encryption key: set FANTASYBOT_TOKEN_KEY_FILE (preferred) or "
             "FANTASYBOT_TOKEN_KEY. Generate one with `fantasybot auth gen-key`."
         )
+
+    def advisor_key(self) -> str | None:
+        return self.optional_secret("anthropic_api_key") if self.advisor else None
 
     def optional_secret(self, name: str) -> str | None:
         """An optional key (odds_api_key, football_data_token): None when not set up."""

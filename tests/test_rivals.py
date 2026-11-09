@@ -44,8 +44,8 @@ def full_squad(prefix: str, defs: list[float], extra: list[SquadPlayer] = ()) ->
 
 
 def entry(team: str, manager: int, name: str, points: float, value: int = 100 * M) -> StandingEntry:
-    return StandingEntry.model_validate({"points": points, "teamValue": value,
-                                         "team": {"id": team, "manager": {"id": manager, "managerName": name}}})
+    team_data = {"id": team, "manager": {"id": manager, "managerName": name}}
+    return StandingEntry.model_validate({"points": points, "teamValue": value, "team": team_data})
 
 
 def act(type_id: int, actor: int, amount: int, player: str | None = None, days_ago: float = 1,

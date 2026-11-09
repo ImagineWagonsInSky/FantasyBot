@@ -65,6 +65,9 @@ Everyday
   rebuild                  rebuild the image after `git pull`
   schedule remove          stop the daily run
 
+The daily plan (optional; see README "The daily plan")
+  secret set anthropic_api_key     Claude picks what to do each morning (paste, not shown)
+
 Outside data (optional, free; see README "Outside data")
   secret set odds_api_key          match odds from The Odds API (paste, not shown)
   secret set football_data_token   real fixtures and results from football-data.org

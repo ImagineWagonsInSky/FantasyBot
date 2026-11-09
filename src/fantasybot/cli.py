@@ -27,12 +27,13 @@ from .auth import (
 )
 from .auth.store import write_private_file
 from .config import NATIVE_CLIENT_ID, WEB_CLIENT_ID, ConfigError, Settings
+from .daily import deliver, prepare
 from .fixtures import FixtureRecorder
 from .healthcheck import HealthCheck, run_and_alert
 from .redact import redact
 from .runtime import Runtime, open_runtime
 from .scout.analysis import manager_name, money
-from .scout.briefing import BriefingError, LeagueView, briefing
+from .scout.briefing import BriefingError
 from .scout.guard import guard_check
 from .scout.history import PriceHistory
 from .telegram import TelegramBot
@@ -287,6 +288,8 @@ SECRETS = {
     "odds_api_key": ("The Odds API key (the-odds-api.com, free plan)", re.compile(r"^[A-Za-z0-9_-]{20,80}$")),
     "football_data_token": ("football-data.org token (football-data.org/client/register)",
                             re.compile(r"^[A-Za-z0-9_-]{20,80}$")),
+    "anthropic_api_key": ("Anthropic API key (console.anthropic.com, API keys)",
+                          re.compile(r"^sk-ant-[A-Za-z0-9_-]{20,250}$")),
 }
 
 
@@ -347,17 +350,24 @@ def action_store(rt: Runtime) -> ActionStore:
 
 async def cmd_briefing(rt: Runtime, args: argparse.Namespace) -> int:
     try:
-        messages, view = await briefing(rt.client, rt.settings, rt.alerter, send=not args.no_send,
-                                        external=rt.external)
+        daily = await prepare(rt.client, rt.settings, rt.alerter, external=rt.external,
+                              with_plan=not args.no_plan)
     except BriefingError as exc:
         print(f"Briefing failed: {exc}", file=sys.stderr)
         return 1
-    print("\n\n".join(messages))
+    if daily.plan_text and daily.plan:
+        print(f"{daily.plan_text}\n({daily.plan.usage})\n\n" + "-" * 40 + "\n")
+    elif daily.problem:
+        print(f"No plan today: {daily.problem}\n")
+    print("\n\n".join(daily.messages))
+    if args.no_send:
+        return 0
     bot = telegram_bot(rt)
-    if not args.no_send and rt.settings.actions and bot is not None:
+    if rt.settings.actions and bot is not None:
         with action_store(rt) as store:
-            offered = await ActionCenter(rt.settings, rt.client, bot, store).offer(view)
-        print(f"\nOffered {offered} action(s) on Telegram.")
+            await deliver(daily, rt.settings, rt.alerter, ActionCenter(rt.settings, rt.client, bot, store))
+    else:
+        await deliver(daily, rt.settings, rt.alerter, None)
     return 0
 
 
@@ -372,11 +382,11 @@ async def cmd_listen(rt: Runtime, args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    async def fresh_briefing() -> LeagueView:
-        _, view = await briefing(rt.client, rt.settings, rt.alerter, external=rt.external)
-        return view
-
     with action_store(rt) as store:
+        async def fresh_briefing() -> None:
+            daily = await prepare(rt.client, rt.settings, rt.alerter, external=rt.external)
+            await deliver(daily, rt.settings, rt.alerter, center)
+
         center = ActionCenter(rt.settings, rt.client, bot, store, briefing=fresh_briefing)
         mode = "dry run: confirmed actions are only simulated" if rt.settings.dry_run else "LIVE"
         log.info("listening for Telegram commands (%s)", mode)
@@ -505,6 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     brief = sub.add_parser("briefing", help="today's lineup, market, clause and rival briefing")
     brief.add_argument("--no-send", action="store_true", help="print it, don't send it to Telegram")
+    brief.add_argument("--no-plan", action="store_true", help="skip the daily plan (no call to Claude)")
     guard = sub.add_parser("guard", help="alert only if the next jornada would cost you points")
     guard.add_argument("--no-send", action="store_true", help="print it, don't send it to Telegram")
     guard.add_argument("--hours", type=float, default=24.0,

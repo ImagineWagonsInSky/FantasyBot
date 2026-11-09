@@ -104,8 +104,10 @@ class HealthCheck:
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         external: ExternalData | None = None,
+        anthropic_http: Any = None,  # tests: the Anthropic SDK's HTTP client
     ) -> None:
         self._external = external
+        self._anthropic_http = anthropic_http
         self._settings = settings
         self._tokens = tokens
         self._client = client
@@ -250,7 +252,13 @@ class HealthCheck:
         ext = self._external
         if ext is None:
             return
-        sources = [("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status),
+        from .advisor import check_key
+
+        async def plan_status() -> str:
+            return await check_key(self._settings, http_client=self._anthropic_http)
+
+        sources = [("daily_plan", "Anthropic API", self._settings.advisor_key() is not None, plan_status),
+                   ("odds_api", "The Odds API", ext.odds_enabled, ext.odds_status),
                    ("football_data", "football-data.org", ext.results_enabled, ext.football_data_status),
                    ("lineups", "Probable lineups", ext.lineups_enabled, ext.lineups_status)]
         for name, label, enabled, call in sources:
