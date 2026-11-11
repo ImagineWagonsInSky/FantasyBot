@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -15,7 +16,7 @@ from . import ATTRIBUTION, __version__
 from .actions.flow import ActionCenter, listen
 from .actions.store import ActionStore
 from .alerts import LogAlerter, telegram_recent_chats
-from .api import FantasyClient
+from .api import ApiError, FantasyClient, ResponseShapeError
 from .api.models import same_id
 from .auth import (
     AuthUnavailable,
@@ -25,6 +26,7 @@ from .auth import (
     TokenStoreError,
     parse_token_paste,
 )
+from .auth.b2c import LoginError, authorize_url, code_from_redirect, pkce_pair
 from .auth.store import write_private_file
 from .config import NATIVE_CLIENT_ID, WEB_CLIENT_ID, ConfigError, Settings
 from .daily import deliver, prepare
@@ -234,6 +236,54 @@ async def cmd_import(rt: Runtime, args: argparse.Namespace) -> int:
     verb = "Stored" if args.no_verify else "Verified with LaLiga and stored"
     print(f"{verb} the token (client {_client_label(bundle.client_id)}).")
     print("You can now clear your clipboard.\n")
+    return print_status(rt.settings, rt.store, rt.freeze)
+
+
+LOGIN_STEPS = """\
+Sign in the way the official LaLiga Fantasy app does:
+
+1. Open Chrome or Firefox on this computer. Press F12, open the Network tab and
+   tick "Preserve log" ("Persist Logs" in Firefox). Then open this address:
+
+{url}
+
+2. Sign in the same way you sign in to the Fantasy app.
+3. At the end the browser tries to open an address starting with
+   authredirect://com.lfp.laligafantasy and fails, or asks to open an app.
+   That's expected: cancel any prompt. Copy that address from either:
+   - the Network tab: the last login.laliga.es entry (status 302), its
+     "location" response header; or
+   - Chrome's Console tab: the red "Failed to launch 'authredirect://...'" line.
+4. Paste it below. It holds a one-time code that only works with a secret this
+   command keeps in memory, and only for the next few minutes.
+
+If the browser lands on miliga.laliga.com instead, LaLiga won't let this route
+back to the app: press Ctrl-C and say so.
+"""
+
+
+async def cmd_login(rt: Runtime, args: argparse.Namespace) -> int:
+    client_id = args.client_id or NATIVE_CLIENT_ID
+    verifier, challenge = pkce_pair()
+    state = secrets.token_urlsafe(16)
+    print(LOGIN_STEPS.format(url=authorize_url(rt.settings, client_id, challenge, state)), flush=True)
+    pasted = read_paste("Paste the authredirect:// address (or the line holding it). "
+                        "It will not be shown on screen.")
+    try:
+        code = code_from_redirect(pasted, state)
+        bundle = await rt.tokens.login_with_code(code, verifier, client_id=client_id)
+    except (LoginError, TokenImportError, AuthUnavailable) as exc:
+        print(f"Sign-in failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Signed in (client {_client_label(bundle.client_id)}). Checking LaLiga Fantasy accepts it…")
+    try:
+        await rt.client.get_current_user()
+        leagues = await rt.client.get_leagues()
+    except (ApiError, ResponseShapeError) as exc:
+        print(f"❌ LaLiga Fantasy still refuses it ({getattr(exc, 'message', exc)}). This route "
+              "doesn't fix it.", file=sys.stderr)
+        return 1
+    print(f"✅ LaLiga Fantasy accepts it: {len(leagues)} league(s) on the account.\n")
     return print_status(rt.settings, rt.store, rt.freeze)
 
 
@@ -499,6 +549,8 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--client-id", help="B2C client that issued the token (default: try the known ones)")
     imp.add_argument("--no-verify", action="store_true",
                      help="store without redeeming it first (needs the full JSON)")
+    login = auth_sub.add_parser("login", help="sign in through the browser the way the official app does")
+    login.add_argument("--client-id", help="B2C client to sign in with (default: the mobile app's)")
     auth_sub.add_parser("status", help="show session expiry and freeze state (never prints tokens)")
     auth_sub.add_parser("refresh", help="redeem the refresh token now")
 
@@ -542,6 +594,8 @@ async def _run_async(args: argparse.Namespace, settings: Settings) -> int:
     async with open_runtime(settings) as rt:
         if args.command == "auth" and args.auth_command == "import":
             return await cmd_import(rt, args)
+        if args.command == "auth" and args.auth_command == "login":
+            return await cmd_login(rt, args)
         if args.command == "auth" and args.auth_command == "refresh":
             return await cmd_refresh(rt, args)
         if args.command == "healthcheck":

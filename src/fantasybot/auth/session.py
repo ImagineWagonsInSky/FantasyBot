@@ -28,8 +28,10 @@ import httpx
 from ..alerts import Alerter
 from ..config import KNOWN_CLIENT_IDS, Settings
 from .b2c import (
+    APP_REDIRECT_URI,
     RefreshError,
     TokenResponse,
+    exchange_code,
     id_token_expiry,
     jwt_expiry,
     refresh_tokens,
@@ -180,12 +182,37 @@ class TokenManager:
                 refreshed_at=now,
                 rotated_at=now,
             )
+        return await self._store_new(bundle)
+
+    async def login_with_code(self, code: str, verifier: str, *, client_id: str,
+                              redirect_uri: str = APP_REDIRECT_URI) -> TokenBundle:
+        """Store the tokens from the browser sign-in and lift any freeze."""
+        now = self._now()
+        try:
+            response = await exchange_code(self._http, self._settings, client_id, code, verifier,
+                                           redirect_uri)
+        except RefreshError as exc:
+            raise TokenImportError(f"LaLiga didn't accept the sign-in code: {exc}") from None
+        if not response.refresh_token:
+            raise TokenImportError("LaLiga signed you in but sent no refresh token")
+        return await self._store_new(TokenBundle(
+            id_token=response.id_token,
+            refresh_token=response.refresh_token,
+            client_id=client_id,
+            id_token_expires_at=id_token_expiry(response, now),
+            refresh_token_expires_at=self._rt_expiry(response.refresh_token_expires_in, now),
+            imported_at=now,
+            refreshed_at=now,
+            rotated_at=now,
+        ))
+
+    async def _store_new(self, bundle: TokenBundle) -> TokenBundle:
         async with self._lock:
             async with self._store.lock():
                 self._store.save(bundle)
                 self._bundle = bundle
         if self._freeze.clear():
-            log.info("write freeze lifted by token import")
+            log.info("write freeze lifted by a new sign-in")
         return bundle
 
     # -- internals ------------------------------------------------------

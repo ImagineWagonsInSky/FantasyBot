@@ -8,9 +8,13 @@ classified so the caller can tell a dead refresh token from a network blip.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import re
+import secrets
 from enum import Enum
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -19,6 +23,9 @@ from ..config import Settings
 from ..redact import redact
 
 SCOPE = "openid offline_access"
+# The official mobile app's return address. With the app's client ID, the browser sign-in
+# (Authorization Code + PKCE, as in LaLigaApp's Google login) ends there with a one-time code.
+APP_REDIRECT_URI = "authredirect://com.lfp.laligafantasy"
 
 
 class TokenResponse(BaseModel):
@@ -82,16 +89,34 @@ async def refresh_tokens(
     http: httpx.AsyncClient, settings: Settings, refresh_token: str, client_id: str
 ) -> TokenResponse:
     """Redeem a refresh token. Raises RefreshError; never returns partial data."""
+    return await _token_request(http, settings, {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "scope": SCOPE,
+    }, "refresh")
+
+
+async def exchange_code(http: httpx.AsyncClient, settings: Settings, client_id: str, code: str,
+                        verifier: str, redirect_uri: str = APP_REDIRECT_URI) -> TokenResponse:
+    """Swap the one-time code from the browser sign-in for tokens (needs the PKCE verifier)."""
+    return await _token_request(http, settings, {
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": verifier,
+        "scope": SCOPE,
+    }, "sign-in")
+
+
+async def _token_request(http: httpx.AsyncClient, settings: Settings, data: dict[str, str],
+                         action: str) -> TokenResponse:
     try:
         response = await http.post(
             settings.b2c_token_url,
             params={"p": settings.b2c_policy},
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-                "scope": SCOPE,
-            },
+            data=data,
             headers={"User-Agent": settings.user_agent, "Accept": "application/json"},
             timeout=settings.http_timeout,
         )
@@ -117,7 +142,7 @@ async def refresh_tokens(
         code, description = _describe(body)
         kind = (RefreshFailure.INVALID_GRANT if body.get("error") == "invalid_grant"
                 else RefreshFailure.REJECTED)
-        raise RefreshError(kind, f"B2C refused the refresh (HTTP {status}): {description}",
+        raise RefreshError(kind, f"B2C refused the {action} (HTTP {status}): {description}",
                            status, code)
 
     try:
@@ -125,6 +150,49 @@ async def refresh_tokens(
     except ValidationError:
         raise RefreshError(RefreshFailure.BAD_RESPONSE,
                            "B2C answered without an id_token", status) from None
+
+
+# -- the browser sign-in (Authorization Code + PKCE) ---------------------------------
+
+
+class LoginError(Exception):
+    """What was pasted after the browser sign-in can't be used."""
+
+
+def pkce_pair() -> tuple[str, str]:
+    """(verifier, S256 challenge). The verifier never leaves this process."""
+    verifier = secrets.token_urlsafe(48)  # 64 characters
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return verifier, base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def authorize_url(settings: Settings, client_id: str, challenge: str, state: str,
+                  redirect_uri: str = APP_REDIRECT_URI) -> str:
+    base = re.sub(r"/token$", "/authorize", settings.b2c_token_url.split("?")[0])
+    return base + "?" + urlencode({
+        "p": settings.b2c_policy, "client_id": client_id, "response_type": "code",
+        "redirect_uri": redirect_uri, "scope": SCOPE, "code_challenge": challenge,
+        "code_challenge_method": "S256", "state": state, "nonce": state,
+    })
+
+
+def code_from_redirect(pasted: str, state: str) -> str:
+    """The one-time code from the address the browser couldn't open (or the line holding it)."""
+    text = pasted.strip()
+    found = re.search(r"authredirect://[^\s'\"<>]+", text)
+    target = urlsplit(found.group(0) if found else text)
+    params = {**parse_qs(target.query), **parse_qs(target.fragment)}
+    if not params:  # just "code=...&state=..."
+        params = parse_qs(text)
+    if "error" in params:
+        detail = (params.get("error_description") or params["error"])[0]
+        raise LoginError(f"LaLiga's sign-in answered with an error: {redact(detail)[:200]}")
+    code = (params.get("code") or [None])[0]
+    if not code:
+        raise LoginError("that doesn't contain a sign-in code (an address with code=...)")
+    if (params.get("state") or [None])[0] != state:
+        raise LoginError("that code is from a different sign-in attempt; run `auth login` again")
+    return code
 
 
 def jwt_expiry(token: str) -> int | None:

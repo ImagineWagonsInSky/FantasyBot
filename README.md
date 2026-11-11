@@ -150,7 +150,8 @@ in its container.
 | `./fb auth status` | Session expiry, refresh-token expiry, freeze state |
 | `./fb healthcheck --no-alert` | Run the check now without messaging Telegram |
 | `./fb fixtures` | Save anonymised API responses to `fixtures-capture/` |
-| `./fb auth import` | Paste a fresh LaLiga token (also lifts a write freeze) |
+| `./fb auth login` | Sign in through the browser, as the official app does (also lifts a write freeze) |
+| `./fb auth import` | Or paste a token from miliga.laliga.com |
 | `./fb logs` | The daily run's log |
 | `./fb listen start` / `stop` | The listener for Telegram buttons (see [Acting from Telegram](#acting-from-telegram)) |
 | `./fb actions log` | Every confirmed action, simulated or real |
@@ -587,19 +588,53 @@ That's deliberate; there's no auto-pilot.
 
 ## Getting your LaLiga token
 
-LaLiga retired email/password login for third-party apps, so the first
-token has to come from a browser. This is the same manual method LaLigaApp
-documents.
+LaLiga retired email/password login for third-party apps, so the bot signs
+in through a browser once and renews the session itself from then on.
+
+Since 11 November 2026, LaLiga Fantasy rejects tokens issued to the
+miliga.laliga.com website (HTTP 401 "Invalid credentials" on your account,
+while LaLiga's login still issues them happily; LaLigaApp users reported the
+same). `./fb auth login` signs in the way the official app does, which is
+the route to try first. The miliga method is kept below in case it works
+again.
+
+### Browser sign-in (`./fb auth login`)
+
+This is the Authorization Code + PKCE sign-in the official mobile app uses,
+with the app's client ID and return address (ported from LaLigaApp's Google
+login).
+
+1. Run `./fb auth login`. It prints a long address and waits.
+2. In Chrome or Firefox on the same computer, press **F12**, open the
+   **Network** tab and tick **Preserve log** (**Persist Logs** in Firefox).
+   Then open the address.
+3. Sign in **the same way you sign in to the Fantasy app** (same email, or the
+   same Google or Apple account).
+4. At the end the browser tries to open an address starting with
+   `authredirect://com.lfp.laligafantasy` and fails or offers to open an app.
+   That's expected; cancel any prompt. Copy that address, either from the
+   Network tab (the last `login.laliga.es` entry with status 302, its
+   `location` response header) or from Chrome's Console tab (the red
+   "Failed to launch 'authredirect://…'" line). Copying the whole line is fine.
+5. Paste it into the waiting command. It isn't shown on screen.
+
+It then checks straight away that LaLiga Fantasy accepts the login and lists
+how many leagues it sees. What you paste is a one-time code that expires in
+minutes and only works together with a secret the command keeps in memory,
+so it's safer than pasting a token. If the browser lands on
+miliga.laliga.com instead of the `authredirect://` address, LaLiga doesn't
+allow this route.
+
+### Token from miliga.laliga.com (`./fb auth import`)
 
 miliga.laliga.com is LaLiga's account site, not the game: it won't show
-your Fantasy league or team, and it doesn't need to. You only sign in there
-so LaLiga issues a token for your account, and the Fantasy API then finds
-your leagues from it. **Sign in the same way you sign in to the Fantasy
-app** (same email, or the same Google or Apple account). A different login
-method can mean a different LaLiga account with no Fantasy team.
+your Fantasy league or team, and it doesn't need to. **Sign in the same way
+you sign in to the Fantasy app.** A different login method can mean a
+different LaLiga account with no Fantasy team.
 
-1. On a PC, open <https://miliga.laliga.com/> in Chrome or Firefox and press
-   **F12** to open the developer tools. Go to the **Network** tab.
+1. On a PC, open <https://miliga.laliga.com/> in a private window in Chrome or
+   Firefox and press **F12** to open the developer tools. Go to the
+   **Network** tab and tick **Preserve log**.
 2. In the Network filter box, type `token?p=B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN`.
 3. Sign in. A request matching the filter appears. Click it, open
    **Response**, and copy the whole JSON, from `{` to `}`.
@@ -612,6 +647,9 @@ method can mean a different LaLiga account with no Fantasy team.
 `auth import` redeems the token once straight away. That proves it works,
 and the copy you pasted is replaced by a freshly rotated one. Then run the
 health check: if `leagues` shows OK, the token reaches your Fantasy league.
+
+Either way, sign in once: the bot renews the session every day by itself,
+and the health check warns 3 days before the login would run out.
 
 ## When an alert arrives
 

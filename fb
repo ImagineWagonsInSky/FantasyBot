@@ -51,7 +51,8 @@ First-time setup
   telegram set-token       store the Telegram bot token (paste, not shown)
   telegram chats           list chats that messaged your bot (to find your chat ID)
   telegram test            send a test alert
-  auth import              paste your LaLiga token (not shown on screen)
+  auth login               sign in through the browser, as the official app does
+  auth import              or: paste a token from miliga.laliga.com (not shown on screen)
   schedule install [HH:MM] daily briefing (default 09:20) + hourly kickoff guard
 
 Everyday
@@ -95,7 +96,7 @@ cmd_init() {
 Next:
   ./fb telegram set-token     then message your bot, then ./fb telegram chats
   (put the chat ID in fantasybot.env), then ./fb telegram test
-  ./fb auth import            paste the token JSON from miliga.laliga.com
+  ./fb auth login             sign in through the browser (or ./fb auth import)
   ./fb briefing --no-send
   ./fb schedule install
 EOF
