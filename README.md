@@ -226,9 +226,11 @@ acting on today:
   buyout clause from cash (debt isn't allowed for clauses), best first and
   with the owner's rank. Also: players unlocking in the next 24h, and the
   best target you can't afford yet. Shielded players are left out.
-- **Your exposure.** Your players any rival could take right now, which
-  rivals can afford each one, and which two to shield. Shielding is free, lasts 24h without Premium, and you do it
-  in the app. Raising a clause costs half the increase.
+- **Your exposure.** Your players any rival could take right now, and which
+  rivals can afford each one. Raising a clause is the protection (it costs
+  half the increase), and the raise buttons pick an amount that puts him out
+  of every rival's estimated reach. Shields aren't suggested unless you set
+  `FANTASYBOT_SHIELDS=true` (not every league or plan has them).
 - **Selling.** Your listings and every offer on your players, listed or not,
   best offer first, compared with value. Listings you should take back (he's
   now worth more than the asking price, or he's in your best XI). Bench
@@ -320,7 +322,7 @@ API. Check anything marked "guide" in the app before relying on it.
 | Clauses in practice sit at or just above market value | the API |
 | Blind bids, highest wins, ties go to the first bid; minimum bid = market value | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), LaLigaApp |
 | Recently signed players are locked from clause steals for a while; the API gives the exact unlock time | [guide](https://fantasy-tracker.com/guias/laliga-fantasy/), the API |
-| Shield: free, 2 players, 24h (48h with Premium), only on open clauses | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), [DAZN](https://www.dazn.com/es-ES/news/f%C3%BAtbol/que-es-blindaje-laliga-fantasy-como-funciona/p2wqlqgud2ls1s0o2z5ypimpl) |
+| Shields (blindaje) depend on the league and plan; off in the bot unless `FANTASYBOT_SHIELDS=true` | [LaLiga](https://www.laliga.com/noticias/el-doble-blindaje-llega-a-laliga-fantasy), your league |
 | Points come from Opta stats plus a 0–4 bonus (`marca_points` in the API) | [LaLiga](https://www.laliga.com/en-FR/news/a-new-version-of-laliga-fantasy-launches-with-100percent-objective-scoring), the API |
 
 ## The daily plan
@@ -334,14 +336,15 @@ first, each with a reason and its button. The full briefing is one
 Ana is 200 ahead: take Star from her and win Isco before 13:20.
 1. Steal Star from Ana (3.00M): +6 xP a jornada, and it costs the leader.
 2. Bid 1.28M on Isco: Ana and Bea need a MID; this beats their usual bids.
-3. Shield Fwd A and Def D in the app (in the app): Carl can afford both.
+3. Raise Fwd A's clause +2.00M: Carl can afford it now; +2M puts him out of reach.
 /details for the full briefing
 ```
 
 How it works:
 
 - The bot still works out everything that's possible (the same suggestions
-  as the buttons, plus things only you can do in the app, like shields).
+  as the buttons, plus things only you can do in the app, like checking a
+  moved deadline).
   Claude only picks among them, puts them in order and says why. Its answer
   must be JSON in a fixed shape, and only candidates from the list are kept,
   one option per player, five at most.
@@ -548,11 +551,13 @@ until you turn off dry run**:
    the exact request FantasyBot would have sent. Use this to try it out.
 4. **With dry run off, the first real action of each kind asks a second
    time** ("this would be your first real clause steal… do it for real?").
-5. **Hard limits apply.** Each real action is capped at
-   `FANTASYBOT_ACTION_MAX_MONEY` (20M by default), real actions at
-   `FANTASYBOT_ACTION_DAILY_LIMIT` per day (5), and nothing happens while
-   writes are frozen. Listing, relisting, withdrawing and declining spend
-   nothing and can be undone, so they don't count towards the daily limit.
+5. **Optional limits of your own.** `FANTASYBOT_ACTION_MAX_MONEY` caps
+   what one real action may spend and `FANTASYBOT_ACTION_DAILY_LIMIT` how
+   many real actions a day; both are 0 (no limit) by default. LaLiga's own
+   rules are always checked (max bid, cash for clauses), and nothing happens
+   while writes are frozen. Listing, relisting, withdrawing and declining
+   spend nothing and can be undone, so they never count towards a daily
+   limit.
 6. **Only your private chat with the bot is obeyed;** everything else is
    ignored without a reply. Every confirmed action is in `./fb actions log`.
 
@@ -699,8 +704,9 @@ as unset.
 | `FANTASYBOT_SELL_THRESHOLD` | `0.05` | offers this far above value get an Accept button (bench) |
 | `FANTASYBOT_STARTER_SELL_THRESHOLD` | `0.08` | the same for players in your best XI |
 | `FANTASYBOT_EARN_PER_POINT` | `100000` | money per point after each jornada (rivals' cash) |
-| `FANTASYBOT_ACTION_MAX_MONEY` | `20000000` | the most one real action may spend |
-| `FANTASYBOT_ACTION_DAILY_LIMIT` | `5` | real actions allowed per day |
+| `FANTASYBOT_ACTION_MAX_MONEY` | `0` | the most one real action may spend; `0` = no limit |
+| `FANTASYBOT_ACTION_DAILY_LIMIT` | `0` | real actions allowed per day; `0` = no limit |
+| `FANTASYBOT_SHIELDS` | `false` | `true` if your league has shields (blindaje), so they're suggested |
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |
 | `FANTASYBOT_TELEGRAM_BOT_TOKEN_FILE` | | file holding the bot token (set by Docker) |
@@ -744,7 +750,7 @@ encryption key and the Telegram bot token. What's done about it:
   request path.
 - **Telegram actions are fenced in.** They're off by default and answer only
   your private chat. Every step is re-checked against LaLiga, confirmations
-  are single-use and expire after 2 minutes, real actions are capped per
+  are single-use and expire after 2 minutes, you can cap real actions per
   action and per day, and every attempt is logged. A stolen bot token alone
   can't trigger anything: commands must come from your own Telegram
   account.

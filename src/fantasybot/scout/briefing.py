@@ -763,9 +763,13 @@ def _exposure(view: LeagueView) -> str:
             reach = (" · within reach of " + ", ".join(f"{manager_name(e)} (≈{money(c)})" for e, c in who)
                      if who else " · no rival can afford it (est.)")
         lines.append(f" • {p.label} · clause {money(p.clause)} (value {money(p.value)}) · {_xp(p)}{reach}")
-    top = ", ".join(p.name for p in at_risk[:2])
-    lines.append(f" Shield {top} in the app (free, 2 players, 24h). Raising a clause costs half "
-                 "the increase: +10M costs 5M.")
+    settings = view.settings or Settings()
+    if settings.shields:
+        top = ", ".join(p.name for p in at_risk[:2])
+        lines.append(f" Shield {top} in the app. Raising a clause costs half the increase: "
+                     "+10M costs 5M.")
+    else:
+        lines.append(" Protect one by raising his clause: it costs half the increase (+10M costs 5M).")
     return "\n".join(lines)
 
 

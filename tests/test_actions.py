@@ -301,7 +301,7 @@ async def test_listener_handles_commands_and_remembers_its_place(act):
     act.tg.pending = [{"update_id": 77, "message": {"text": "/status", "from": {"id": CHAT},
                                                      "chat": {"id": CHAT, "type": "private"}}}]
     await listen(act.center, act.bot, act.store, once=True)
-    assert "Test mode" in act.tg.text and "real actions today: 0 of 5" in act.tg.text
+    assert "Test mode" in act.tg.text and "real actions today: 0 (no daily limit)" in act.tg.text
     assert act.store.get("telegram_offset") == "78"
     await listen(act.center, act.bot, act.store, once=True)
     assert act.tg.calls[-1] == ("getUpdates", {"timeout": 50, "allowed_updates": ["message",
@@ -458,3 +458,18 @@ async def test_kickoff_guard_offers_sell_buttons_for_a_negative_balance(act):
     assert await act.center.offer_sales(result.view, result.to_sell) == len(result.to_sell)
     assert act.tg.text.startswith("List one of these to get back above 0?")
     assert any(label.startswith("💸 List ") for label in labels(act.tg))
+
+
+def test_zero_means_no_limit_of_your_own(settings, tmp_path):
+    from datetime import date
+
+    from fantasybot.actions.core import ActionRefused, Plan, check_limits
+
+    settings.dry_run = False
+    store = ActionStore(tmp_path / "limits.sqlite")
+    big = Plan("steal", "steal someone", 500_000_000, {})
+    check_limits(big, settings, store, date(2026, 11, 14))  # defaults: no caps of your own
+    settings.action_max_money = 20_000_000
+    with pytest.raises(ActionRefused, match="per-action limit"):
+        check_limits(big, settings, store, date(2026, 11, 14))
+    store.close()

@@ -17,7 +17,7 @@ from typing import Any
 from ..api import ApiError, FantasyClient, ResponseShapeError, WriteResult
 from ..auth import AuthUnavailable, WritesFrozen
 from ..config import Settings
-from ..scout.analysis import SquadPlayer
+from ..scout.analysis import SquadPlayer, money
 from ..scout.briefing import BriefingError, LeagueView, last_briefing
 from ..telegram import Button, TelegramBot, TelegramError
 from .core import (
@@ -145,12 +145,13 @@ class ActionCenter:
         elif text == "/status":
             today = self._clock().date()
             kinds = ", ".join(sorted(self._settings.enabled_actions())) or "none"
+            cap, limit = self._settings.action_max_money, self._settings.action_daily_limit
             plan = (f"on ({self._settings.advisor_model}, {self._settings.advisor_effort} effort)"
                     if self._settings.advisor_key() else "off")
             await self.say(f"{self._mode_line()}\nDaily plan: {plan}\nActions on: {kinds}\n"
-                           f"Per-action limit: {self._settings.action_max_money / 1e6:.1f}M · "
-                           f"real actions today: {self._store.live_actions_on(today)} of "
-                           f"{self._settings.action_daily_limit}")
+                           f"Per-action limit: {money(cap) if cap else 'none'} · "
+                           f"real actions today: {self._store.live_actions_on(today)}"
+                           + (f" of {limit}" if limit else " (no daily limit)"))
         else:
             await self.say(HELP)
 

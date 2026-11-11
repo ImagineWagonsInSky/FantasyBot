@@ -6,7 +6,8 @@ Game rules relied on here (see README, "The rules that matter"):
   * the most you can bid is cash + 20% of your team value;
   * a buyout clause can't be paid with debt;
   * raising a clause costs half of the increase;
-  * a free shield (blindaje) protects 2 players for 24h, only open clauses.
+  * shields (blindaje) exist only in some leagues and plans (FANTASYBOT_SHIELDS);
+    a shielded player can't be taken, so the bot always respects the flag.
 """
 
 from __future__ import annotations

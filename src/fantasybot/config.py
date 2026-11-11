@@ -126,8 +126,11 @@ class Settings(BaseSettings):
     # with dry_run still on, confirmed actions are only simulated.
     actions: bool = False
     action_kinds: str = "lineup,bid,steal,raise,sell,relist,accept,decline,withdraw"
-    action_max_money: int = 20_000_000  # per action: a bid, a clause, a raise's cost
-    action_daily_limit: int = 5  # real (not dry-run) actions per day
+    action_max_money: int = 0  # most one action may spend (bid, clause, raise); 0 = no limit
+    action_daily_limit: int = 0  # real (not dry-run) actions per day; 0 = no limit
+    # Shields (blindaje). Off: the league or your plan doesn't have them, so the bot never
+    # suggests one; raising a clause is the only protection. Shielded players are still respected.
+    shields: bool = False
     confirm_seconds: int = 120  # how long a Confirm button stays valid
 
     # Storage and secrets.

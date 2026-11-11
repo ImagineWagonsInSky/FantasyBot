@@ -425,11 +425,12 @@ async def prepare(proposal: Proposal, option: int, client: FantasyClient, settin
 
 
 def check_limits(plan: Plan, settings: Settings, store: ActionStore, today: Any) -> None:
-    if plan.money > settings.action_max_money:
+    """Your own caps (0 = none). LaLiga's rules (max bid, cash for clauses) are checked in prepare()."""
+    if settings.action_max_money and plan.money > settings.action_max_money:
         raise ActionRefused(f"{money(plan.money)} is over your per-action limit "
                             f"({money(settings.action_max_money)}, FANTASYBOT_ACTION_MAX_MONEY). "
                             "Do it in the app, or raise the limit.")
-    if (not settings.dry_run and plan.kind not in REVERSIBLE
+    if (settings.action_daily_limit and not settings.dry_run and plan.kind not in REVERSIBLE
             and store.live_actions_on(today, exclude=REVERSIBLE) >= settings.action_daily_limit):
         raise ActionRefused(f"That's today's limit of {settings.action_daily_limit} real actions "
                             "(FANTASYBOT_ACTION_DAILY_LIMIT).")

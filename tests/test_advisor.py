@@ -9,7 +9,7 @@ import httpx2
 import pytest
 from pydantic import SecretStr
 
-from fantasybot.advisor import SYSTEM, Aliases, Candidate, cost_line, read_answer
+from fantasybot.advisor import Aliases, Candidate, cost_line, read_answer, system_prompt
 from fantasybot.daily import deliver, prepare
 
 from .test_actions import CHAT, NOW, act, tg  # noqa: F401  (fixtures)
@@ -35,14 +35,14 @@ class FakeClaude:
     def default_answer(self, data: dict) -> dict:
         isco = self.find(data, "Bid", "should beat")
         steal = self.find(data, "Pay", "Star")
-        shield = self.find(data, "Shield")
+        protect = self.find(data, "Raise Fwd A's clause")
         same_player = self.find(data, "Bid 1.20M on Isco")
         return {"headline": "Rival A is 200 ahead: take Star from Rival A and win Isco.",
                 "picks": [{"id": steal, "why": "Swing of 6 xP a jornada, and it hurts Rival A."},
                           {"id": "c999", "why": "not a candidate"},
                           {"id": isco, "why": "Rival A and Rival B need a MID; this beats them."},
                           {"id": same_player, "why": "a second Isco bid"},
-                          {"id": shield, "why": "Rival C can afford Fwd A's clause."}],
+                          {"id": protect, "why": "Rival C can afford Fwd A's clause."}],
                 "notes": ["Rival B is selling Listed.", "x" * 500]}
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
@@ -120,14 +120,15 @@ async def test_the_plan_request_is_anonymous_low_effort_and_constrained(planned,
     assert body["model"] == "claude-opus-5-5" and body["fallbacks"] == "default"
     assert body["output_config"]["effort"] == "low"
     assert body["output_config"]["format"]["type"] == "json_schema"
-    assert body["system"] == SYSTEM
+    assert body["system"] == system_prompt(planned.settings)
+    assert "no shields in this league" in body["system"] and "{protection}" not in body["system"]
     sent = body["messages"][0]["content"]
     assert not mentions_a_friend(sent)  # managers, their teams, the feed's free text: none of it
     assert "Rival A" in sent and "Rival C" in sent
     data = claude.data
     assert {r["alias"] for r in data["rivals"]} == {"Rival A", "Rival B", "Rival C"}
     assert data["you"]["cash"] == "4.00M" and data["you"]["behind_leader"] == 200
-    assert any(c["action"].startswith("Shield") for c in data["candidates"])
+    assert not any("Shield" in c["action"] for c in data["candidates"])  # no shields in this league
     assert daily.problem is None and daily.plan is not None
 
 
@@ -135,7 +136,7 @@ async def test_only_listed_candidates_survive_one_per_player_with_names_restored
     daily = await planned.prepare()
     picks = daily.plan.picks
     assert [p.candidate.label for p in picks] == [
-        "Steal Star from Ana (3.00M)", "Bid 1.28M on Isco", "Shield Fwd A and Def D in the app"]
+        "Steal Star from Ana (3.00M)", "Bid 1.28M on Isco", "Raise Fwd A's clause +2.00M"]
     assert picks[0].why == "Swing of 6 xP a jornada, and it hurts Ana."
     assert daily.plan.headline.startswith("Ana is 200 ahead")
     assert daily.plan.notes[0] == "Bea is selling Listed." and len(daily.plan.notes[1]) <= 220
@@ -143,7 +144,7 @@ async def test_only_listed_candidates_survive_one_per_player_with_names_restored
     text = daily.plan_text
     assert text.startswith("🧠 Today's plan · jornada 12 starts Sat 14 Nov 21:00")
     assert "1. Steal Star from Ana (3.00M): Swing of 6 xP" in text
-    assert "3. Shield Fwd A and Def D in the app (in the app): " in text
+    assert "3. Raise Fwd A's clause +2.00M: Carl can afford Fwd A's clause." in text
 
 
 # -- what gets sent --------------------------------------------------------------------------
@@ -156,7 +157,8 @@ async def test_only_the_plan_is_sent_with_its_buttons_and_details_on_request(pla
     plan = planned.tg.sent[-1]
     assert plan["text"].startswith("🧠 Today's plan") and "/details for the full briefing" in plan["text"]
     buttons = planned.tg.buttons()
-    assert list(buttons) == ["1. Steal Star from Ana (3.00M)", "2. Bid 1.28M on Isco"]  # shield: app only
+    assert list(buttons) == ["1. Steal Star from Ana (3.00M)", "2. Bid 1.28M on Isco",
+                             "3. Raise Fwd A's clause +2.00M"]
     await planned.tap("2. Bid 1.28M on Isco")
     assert "Bid 1.28M for Isco" in planned.tg.text and planned.fake.writes == []  # asks first, as always
 
@@ -279,3 +281,11 @@ def test_secret_set_takes_an_anthropic_key(tmp_path, monkeypatch, capsys):
     assert target.read_text().strip() == KEY and stat.S_IMODE(target.stat().st_mode) == 0o600
     out = capsys.readouterr()
     assert KEY not in out.out + out.err
+
+
+async def test_shields_are_only_suggested_when_the_league_has_them(planned, claude):
+    planned.settings.shields = True
+    daily = await planned.prepare()
+    assert any(c["action"].startswith("Shield Fwd A and Def D") for c in claude.data["candidates"])
+    assert "Shielding (only in the app)" in claude.sent["system"]
+    assert "Shield Fwd A, Def D in the app." in "\n".join(daily.messages)

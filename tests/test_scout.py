@@ -256,8 +256,9 @@ async def test_briefing_end_to_end(league, scout_client, settings, alerter, seed
     assert "Fwd A (FWD)" in exposure  # open clause, not shielded
     assert "within reach of Carl (≈21.00M)" in exposure.split("Fwd A")[1].splitlines()[0]
     assert "within reach of Ana (≈15.00M), Carl (≈21.00M)" in exposure.split("Def D")[1].splitlines()[0]
-    assert "Keeper" not in exposure.split("Shield")[0]  # shielded
-    assert "Mid A" not in exposure.split("Shield")[0]  # still locked
+    assert "Keeper" not in exposure.split("Protect")[0]  # shielded
+    assert "Mid A" not in exposure.split("Protect")[0]  # still locked
+    assert "raising his clause" in exposure and "Shield" not in exposure  # no shields in this league
     # History and activity
     assert "Price history started today" in text
     assert "Ana clausuló a Fwd X" in text and "Old news" not in text
