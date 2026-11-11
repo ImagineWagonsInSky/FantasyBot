@@ -262,13 +262,36 @@ back to the app: press Ctrl-C and say so.
 """
 
 
+HANDOFF_STEPS = """\
+Sign in the way the official LaLiga Fantasy app does:
+
+1. Open this address in Chrome or Firefox on this computer (Ctrl+click may work):
+
+{url}
+
+2. Sign in the same way you sign in to the Fantasy app.
+3. When the browser asks to open the link with "FantasyBot sign-in" or
+   "xdg-open", choose Open. That hands the one-time code to this command.
+
+Waiting up to 10 minutes (Ctrl-C to stop)...
+"""
+
+NO_HANDOFF = ("The browser never handed over the sign-in address. Either the sign-in didn't "
+              "finish, or LaLiga didn't send the browser back to the app's address (it stopped on "
+              "a LaLiga page, or kept loading with no prompt). Note what the page showed.")
+
+
 async def cmd_login(rt: Runtime, args: argparse.Namespace) -> int:
     client_id = args.client_id or NATIVE_CLIENT_ID
     verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(16)
-    print(LOGIN_STEPS.format(url=authorize_url(rt.settings, client_id, challenge, state)), flush=True)
+    steps = HANDOFF_STEPS if args.handoff else LOGIN_STEPS
+    print(steps.format(url=authorize_url(rt.settings, client_id, challenge, state)), flush=True)
     pasted = read_paste("Paste the authredirect:// address (or the line holding it). "
                         "It will not be shown on screen.")
+    if args.handoff and not pasted.strip():
+        print(NO_HANDOFF, file=sys.stderr)
+        return 1
     try:
         code = code_from_redirect(pasted, state)
         bundle = await rt.tokens.login_with_code(code, verifier, client_id=client_id)
@@ -551,6 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="store without redeeming it first (needs the full JSON)")
     login = auth_sub.add_parser("login", help="sign in through the browser the way the official app does")
     login.add_argument("--client-id", help="B2C client to sign in with (default: the mobile app's)")
+    login.add_argument("--handoff", action="store_true", help=argparse.SUPPRESS)  # ./fb feeds stdin
     auth_sub.add_parser("status", help="show session expiry and freeze state (never prints tokens)")
     auth_sub.add_parser("refresh", help="redeem the refresh token now")
 

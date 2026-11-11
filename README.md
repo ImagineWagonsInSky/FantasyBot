@@ -604,19 +604,27 @@ This is the Authorization Code + PKCE sign-in the official mobile app uses,
 with the app's client ID and return address (ported from LaLigaApp's Google
 login).
 
+On a Linux desktop:
+
 1. Run `./fb auth login`. It prints a long address and waits.
-2. In Chrome or Firefox on the same computer, press **F12**, open the
-   **Network** tab and tick **Preserve log** (**Persist Logs** in Firefox).
-   Then open the address.
-3. Sign in **the same way you sign in to the Fantasy app** (same email, or the
-   same Google or Apple account).
-4. At the end the browser tries to open an address starting with
-   `authredirect://com.lfp.laligafantasy` and fails or offers to open an app.
-   That's expected; cancel any prompt. Copy that address, either from the
-   Network tab (the last `login.laliga.es` entry with status 302, its
-   `location` response header) or from Chrome's Console tab (the red
-   "Failed to launch 'authredirect://…'" line). Copying the whole line is fine.
-5. Paste it into the waiting command. It isn't shown on screen.
+2. Open the address in Chrome or Firefox on the same computer and sign in
+   **the same way you sign in to the Fantasy app** (same email, or the same
+   Google or Apple account).
+3. At the end the browser asks to open the link with "FantasyBot sign-in"
+   (or "xdg-open"). Choose **Open**. The bot takes it from there.
+
+For the sign-in, `./fb` briefly registers a handler for `authredirect://`
+links (a `.desktop` file and a tiny script under your home folder), so the
+address the browser can't open goes straight to the bot. It removes them
+afterwards. If no prompt ever appears and the page just keeps loading, or
+stops on a LaLiga page, the bot says so after 10 minutes (or press Ctrl-C):
+LaLiga didn't send the browser back to the app's address.
+
+Elsewhere (a Mac, or `./fb auth login --client-id …`) you copy the address
+yourself: press **F12** before signing in, tick **Preserve log** in the
+**Network** tab, and after signing in copy the `location` header of the last
+`login.laliga.es` entry (status 302), or Chrome's red "Failed to launch
+'authredirect://…'" Console line, then paste it into the waiting command.
 
 It then checks straight away that LaLiga Fantasy accepts the login and lists
 how many leagues it sees. What you paste is a one-time code that expires in

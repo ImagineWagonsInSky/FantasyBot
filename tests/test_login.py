@@ -90,7 +90,7 @@ async def test_a_refused_code_stores_nothing(tokens, store, router):
 # -- the command ------------------------------------------------------------------------------
 
 
-def run_login(tmp_path, monkeypatch, router, capsys, reply):
+def run_login(tmp_path, monkeypatch, router, capsys, reply, extra=()):
     import functools
 
     from cryptography.fernet import Fernet
@@ -113,7 +113,7 @@ def run_login(tmp_path, monkeypatch, router, capsys, reply):
         return reply(seen["state"])
 
     monkeypatch.setattr(cli, "read_paste", paste)
-    code = cli.main(["auth", "login"])
+    code = cli.main(["auth", "login", *extra])
     out = capsys.readouterr()
     return code, seen, out.out + out.err
 
@@ -142,3 +142,10 @@ def test_auth_login_rejects_a_paste_from_another_attempt(tmp_path, monkeypatch, 
     code, _, out = run_login(tmp_path, monkeypatch, router, capsys,
                              lambda state: "authredirect://com.lfp.laligafantasy?state=stale&code=C1")
     assert code == 1 and "different sign-in attempt" in out and router.b2c() == []
+
+
+def test_handoff_explains_when_the_browser_never_sends_the_address(tmp_path, monkeypatch, router, fake,
+                                                                  capsys):
+    code, seen, out = run_login(tmp_path, monkeypatch, router, capsys, lambda state: "", ["--handoff"])
+    assert code == 1 and "choose Open" in seen["printed"]
+    assert "The browser never handed over the sign-in address" in out and router.b2c() == []

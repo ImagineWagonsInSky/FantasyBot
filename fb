@@ -297,6 +297,50 @@ RandomizedDelaySec=5min"
   esac
 }
 
+# Browser sign-in. On a Linux desktop a temporary handler for authredirect:// links hands
+# the address the browser can't open straight to the bot (it holds a one-time code that
+# only works with the secret the bot keeps in memory). Elsewhere you paste the address.
+cmd_login() {
+  need_docker
+  if [ "$OS" != linux ] || ! command -v xdg-mime >/dev/null 2>&1 || [ "$#" -gt 0 ]; then
+    run_in fantasybot auth login "$@"
+    return
+  fi
+  apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/fantasybot"
+  mkdir -p "$apps" "$cache"
+  catcher="$cache/login-url"
+  helper="$cache/login-catch"
+  fifo="$cache/login-fifo"
+  desktop="$apps/fantasybot-login.desktop"
+  rm -f -- "${catcher:?}" "${fifo:?}"
+  trap 'rm -f -- "${catcher:?}" "${helper:?}" "${desktop:?}" "${fifo:?}"' EXIT INT TERM
+  # shellcheck disable=SC2016  # $1 is for the helper script, not expanded here
+  printf '#!/bin/sh\numask 077\nprintf "%%s\\n" "$1" > "%s"\n' "$catcher" >"$helper"
+  chmod 700 "$helper"
+  printf '[Desktop Entry]\nType=Application\nName=FantasyBot sign-in\nExec="%s" %%u\nMimeType=x-scheme-handler/authredirect;\nNoDisplay=true\nTerminal=false\n' \
+    "$helper" >"$desktop"
+  previous=$(xdg-mime query default x-scheme-handler/authredirect 2>/dev/null || true)
+  xdg-mime default fantasybot-login.desktop x-scheme-handler/authredirect
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$apps" >/dev/null 2>&1 || true
+  fi
+  mkfifo -m 600 "$fifo"
+  (
+    i=0
+    while [ ! -s "$catcher" ] && [ "$i" -lt 600 ]; do sleep 1; i=$((i + 1)); done
+    cat "$catcher" 2>/dev/null || true
+  ) >"$fifo" &
+  waiter=$!
+  status=0
+  compose run --rm --quiet-pull -T fantasybot auth login --handoff <"$fifo" || status=$?
+  kill "$waiter" 2>/dev/null || true
+  if [ -n "$previous" ]; then
+    xdg-mime default "$previous" x-scheme-handler/authredirect 2>/dev/null || true
+  fi
+  return "$status"
+}
+
 cmd_listen() {
   need_docker
   case "$1" in
@@ -334,6 +378,8 @@ case "${1:-help}" in
   auth)
     if [ "${2:-}" = gen-key ]; then
       need_docker; shift; run_in setup auth "$@"
+    elif [ "${2:-}" = login ]; then
+      shift 2; cmd_login "$@"
     else
       need_docker; run_in fantasybot "$@"
     fi ;;
