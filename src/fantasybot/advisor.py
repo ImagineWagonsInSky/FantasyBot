@@ -42,7 +42,7 @@ from .scout.analysis import (
     rank_market,
     read_lineup,
 )
-from .scout.briefing import LeagueView, exposure_order, takers, verdicts
+from .scout.briefing import LeagueView, biddable, exposure_order, takers, verdicts
 from .scout.model import position_label
 
 log = logging.getLogger(__name__)
@@ -285,7 +285,8 @@ def payload(view: LeagueView, cands: list[Candidate], aliases: Aliases) -> dict[
     market = []
     picks = rank_market(view.market, view.details, view.week, view.balance, limit, {}, {},
                         exclude_team=view.me.team.id, outlook=view.outlook_fn())
-    for m in [m for m in picks if m.projection.outlook > 0][:8]:
+    biddable_picks = [m for m in picks if m.projection.outlook > 0 and biddable(m.item, view.settings)]
+    for m in biddable_picks[:8]:
         item: dict[str, Any] = {
             "name": m.player.display_name, "pos": position_label(m.player), "price": money(m.price),
             "xp_3j": round(m.projection.outlook, 1), "fixture": m.projection.fixture,

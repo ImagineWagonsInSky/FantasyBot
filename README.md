@@ -222,6 +222,8 @@ acting on today:
 - **Market.** The best five players you can actually bid on before the
   market closes, marked ✓ (payable from cash) or ⚠ (needs credit: you must
   be back above 0 by kickoff). Players over your maximum bid get one line.
+  Bidding on a player another manager has listed needs Premium, so without
+  `FANTASYBOT_PREMIUM=true` those get their own line and no bid button.
 - **Clause steals.** Rival players you can take right now by paying their
   buyout clause from cash (debt isn't allowed for clauses), best first and
   with the owner's rank. Also: players unlocking in the next 24h, and the
@@ -706,6 +708,7 @@ as unset.
 | `FANTASYBOT_EARN_PER_POINT` | `100000` | money per point after each jornada (rivals' cash) |
 | `FANTASYBOT_ACTION_MAX_MONEY` | `0` | the most one real action may spend; `0` = no limit |
 | `FANTASYBOT_ACTION_DAILY_LIMIT` | `0` | real actions allowed per day; `0` = no limit |
+| `FANTASYBOT_PREMIUM` | `false` | `true` if you have LaLiga Fantasy Premium, so bids on players other managers list are suggested |
 | `FANTASYBOT_SHIELDS` | `false` | `true` if your league has shields (blindaje), so they're suggested |
 | `FANTASYBOT_STATE_DIR` | `~/.local/state/fantasybot` | encrypted token + freeze marker (set by Docker) |
 | `FANTASYBOT_TOKEN_KEY_FILE` | | file holding the encryption key (set by Docker) |

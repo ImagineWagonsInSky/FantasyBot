@@ -119,7 +119,7 @@ async def test_the_briefing_offers_buttons_in_test_mode(act):
     assert "🔁 Apply best XI 4-3-3 (+10.0 xP)" in offered
     assert "🎯 Steal Star · 3.00M" in offered and "🎯 Steal Cheap · 2.00M" in offered
     assert {"🛒 Isco 1.20M", "1.26M", "1.32M"} <= set(offered)
-    assert "🛒 Listed 10.00M" in offered  # needs credit, still under the max bid
+    assert not any("Listed" in label for label in offered)  # a manager's listing: needs Premium
     # Raise: Carl (≈21M) could take Fwd A (20M): +2M puts him out of reach; or +25%.
     assert "🛡️ Fwd A +2.00M (pay 1.00M)" in offered and "🛡️ Fwd A +5.00M (pay 2.50M)" in offered
     assert "Test mode" in act.tg.text and act.fake.writes == []
@@ -175,6 +175,7 @@ async def test_only_your_private_chat_is_obeyed(act, chat, user, kind):
 
 
 async def test_bid_lineup_and_raise_requests(act):
+    act.settings.premium = True  # bidding on a manager's listing
     await act.offer()
     await act.tap("🛒 Listed 10.00M")
     assert "more than your cash (4.00M)" in act.tg.text and "score 0 points" in act.tg.text
@@ -473,3 +474,13 @@ def test_zero_means_no_limit_of_your_own(settings, tmp_path):
     with pytest.raises(ActionRefused, match="per-action limit"):
         check_limits(big, settings, store, date(2026, 11, 14))
     store.close()
+
+
+async def test_a_managers_listing_needs_premium_even_from_an_old_button(act):
+    act.settings.premium = True
+    await act.offer()
+    assert "🛒 Listed 10.00M" in labels(act.tg)
+    act.settings.premium = False  # e.g. Premium ran out since the briefing
+    await act.tap("🛒 Listed 10.00M")
+    assert "listed by a manager: bidding on that needs Premium" in act.tg.text
+    assert act.fake.writes == []

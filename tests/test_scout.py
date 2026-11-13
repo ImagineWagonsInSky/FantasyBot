@@ -244,8 +244,8 @@ async def test_briefing_end_to_end(league, scout_client, settings, alerter, seed
     assert "closes Sat 14 Nov 13:20" in market
     assert "Isco" in market and "✓" in market
     assert "Over your max bid: Pricey (40.00M" in market
-    assert market.index("Isco") < market.index("Listed") < market.index("Pricey")
-    assert "Listed" in market and "⚠ credit" in market.split("Listed")[1].splitlines()[0]
+    assert market.index("Isco") < market.index("Pricey") < market.index("Listed")
+    assert "Listed by managers (bidding needs Premium): Listed (10.00M" in market
     assert "Crocked" not in market and "Fwd B" not in market
     # Clauses
     clauses = text.split("🎯")[1].split("🛡️")[0]

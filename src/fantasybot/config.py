@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     # Shields (blindaje). Off: the league or your plan doesn't have them, so the bot never
     # suggests one; raising a clause is the only protection. Shielded players are still respected.
     shields: bool = False
+    # LaLiga Fantasy Premium. Without it you can't bid on players other managers list, so the
+    # bot never suggests it; LaLiga's own market listings are biddable either way.
+    premium: bool = False
     confirm_seconds: int = 120  # how long a Confirm button stays valid
 
     # Storage and secrets.

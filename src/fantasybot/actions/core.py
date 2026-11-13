@@ -38,7 +38,7 @@ from ..scout.analysis import (
     rank_market,
     read_lineup,
 )
-from ..scout.briefing import LeagueView, exposure_order, takers, verdicts
+from ..scout.briefing import LeagueView, biddable, exposure_order, takers, verdicts
 from ..scout.model import DEF, FWD, GK, MID
 from ..scout.selling import bidder_name, on_sale, sell_candidates, shop_window, should_withdraw
 from .store import ActionStore, Proposal
@@ -137,6 +137,8 @@ def suggest(view: LeagueView, settings: Settings, now: datetime) -> list[Suggest
                 break
             if pick.projection.outlook <= 0 or pick.item.bid is not None:
                 continue
+            if not biddable(pick.item, settings):
+                continue  # another manager's listing: bidding on it needs Premium
             if not (pick.payable_cash or pick.payable_credit):
                 continue
             amounts = {_round_up(pick.price * s, 10_000) for s in BID_STEPS}
@@ -308,6 +310,9 @@ async def prepare(proposal: Proposal, option: int, client: FantasyClient, settin
             raise ActionRefused(f"The market for {name} has closed.")
         if item.bid is not None:
             raise ActionRefused(f"You already have a bid on {name}; change it in the app.")
+        if not biddable(item, settings):
+            raise ActionRefused(f"{name} is listed by a manager: bidding on that needs Premium "
+                                "(FANTASYBOT_PREMIUM).")
         minimum = item.playerMaster.marketValue or item.salePrice or 0
         if amount < minimum:
             raise ActionRefused(f"The minimum bid for {name} is now {money(minimum)}.")

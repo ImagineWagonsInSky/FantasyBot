@@ -289,3 +289,10 @@ async def test_shields_are_only_suggested_when_the_league_has_them(planned, clau
     assert any(c["action"].startswith("Shield Fwd A and Def D") for c in claude.data["candidates"])
     assert "Shielding (only in the app)" in claude.sent["system"]
     assert "Shield Fwd A, Def D in the app." in "\n".join(daily.messages)
+
+
+async def test_the_plan_never_sees_a_managers_listing_as_biddable(planned, claude):
+    await planned.prepare()
+    data = claude.data
+    assert "Listed" not in [m["name"] for m in data["market"]]
+    assert not any("on Listed" in c["action"] for c in data["candidates"])

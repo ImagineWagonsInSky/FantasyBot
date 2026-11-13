@@ -199,6 +199,11 @@ async def outside(label: str, fetch: Callable[[], Awaitable[T]], fallback: Calla
         return cached
 
 
+def biddable(item: MarketItem, settings: Settings | None) -> bool:
+    """LaLiga's own listings always; another manager's listing only with Premium."""
+    return item.discr != "marketPlayerTeam" or bool(settings and settings.premium)
+
+
 def _describe(exc: Exception) -> str:
     if isinstance(exc, ApiError):
         return exc.message
@@ -393,7 +398,7 @@ async def gather_intel(client: FantasyClient, settings: Settings, view: LeagueVi
     picks = rank_market(view.market, view.details, view.week, view.balance, limit, {}, {},
                         exclude_team=view.me.team.id, outlook=view.outlook_fn())
     contested = {}
-    for pick in [p for p in picks if p.projection.outlook > 0][:8]:
+    for pick in [p for p in picks if p.projection.outlook > 0 and biddable(p.item, settings)][:8]:
         contested[str(pick.item.id)] = competition(pick.item, pick.player.display_name,
                                                    position_of(pick.player), pick.price, profiles, limit)
     rivals = [Rival(e, view.rank_of(e), view.squads.get(str(e.team.id), []))
@@ -681,6 +686,8 @@ def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: di
     closes = min((d for d in (parse_time(i.expirationDate) for i in view.market
                               if i.discr == "marketPlayerLeague") if d), default=None)
     useful = [p for p in picks if p.projection.outlook > 0]
+    premium_only = [p for p in useful if not biddable(p.item, view.settings)]
+    useful = [p for p in useful if biddable(p.item, view.settings)]
     reachable = [p for p in useful if p.payable_cash or p.payable_credit or limit is None]
     lines = [f"🛒 Market{' · closes ' + view.when(closes) if closes else ''} "
              "(best 5 you can bid on, by expected points over the next 3 jornadas)"]
@@ -702,6 +709,10 @@ def _market(view: LeagueView, team_value: int | None, d1: dict[str, int], d3: di
     if over:
         lines.append(" Over your max bid: " + ", ".join(
             f"{p.player.display_name} ({money(p.price)}, {p.projection.outlook:.1f} xP/j)" for p in over))
+    if premium_only:
+        lines.append(" Listed by managers (bidding needs Premium): " + ", ".join(
+            f"{p.player.display_name} ({money(p.price)}, {p.projection.outlook:.1f} xP/j)"
+            for p in premium_only[:3]))
     return "\n".join(lines)
 
 
